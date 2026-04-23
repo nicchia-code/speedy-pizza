@@ -16,8 +16,192 @@
 
   <title>Speedy Reader</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    :root {
+      color-scheme: light;
+      --loader-bg: #f7ecdf;
+      --loader-ink: #211a16;
+      --loader-muted: #7a6458;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--loader-bg);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    #boot-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: var(--loader-bg);
+      transition: opacity 260ms ease, visibility 260ms ease;
+    }
+
+    #boot-loader.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .boot-loader__card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      width: min(calc(100vw - 32px), 720px);
+      text-align: center;
+    }
+
+    .boot-loader__logo-shell {
+      width: min(calc(100vw - 64px), 420px);
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+    }
+
+    #boot-loader__logo-stack {
+      position: relative;
+      width: 76%;
+      aspect-ratio: 1;
+      transform: rotate(0deg);
+      transform-origin: center;
+      will-change: transform;
+    }
+
+    .boot-loader__logo {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+    }
+
+    .boot-loader__title {
+      width: 100%;
+      color: var(--loader-ink);
+      font-size: clamp(30px, 8.5vw, 52px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 0.94;
+    }
+
+    .boot-loader__hint {
+      width: 100%;
+      color: var(--loader-muted);
+      font-size: clamp(14px, 3.8vw, 18px);
+      font-weight: 600;
+    }
+
+  </style>
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <div id="boot-loader" aria-live="polite">
+    <div class="boot-loader__card">
+      <div class="boot-loader__logo-shell">
+        <div id="boot-loader__logo-stack">
+          <img
+            class="boot-loader__logo"
+            src="pizzalogo.png"
+            alt="Speedy Reader loading"
+          />
+        </div>
+      </div>
+      <div class="boot-loader__title">Speedy Reader</div>
+      <div class="boot-loader__hint">Sto scaldando il forno</div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const loader = document.getElementById('boot-loader');
+      const logo = document.getElementById('boot-loader__logo-stack');
+      let angle = 0;
+      let velocity = 110;
+      let lastTime = performance.now();
+      let disposed = false;
+
+      function tick(now) {
+        if (disposed || !logo) {
+          return;
+        }
+
+        const deltaSeconds = Math.min((now - lastTime) / 1000, 0.05);
+        lastTime = now;
+        velocity = Math.min(velocity + (deltaSeconds * 240), 920);
+        angle += velocity * deltaSeconds;
+        logo.style.transform = `rotate(${angle}deg)`;
+        window.requestAnimationFrame(tick);
+      }
+
+      window.requestAnimationFrame(tick);
+
+      function hideLoader() {
+        if (!loader || disposed) {
+          return;
+        }
+
+        disposed = true;
+        loader.classList.add('is-hidden');
+        window.setTimeout(() => {
+          loader.remove();
+        }, 320);
+      }
+
+      window.addEventListener('flutter-first-frame', hideLoader, { once: true });
+      window.setTimeout(hideLoader, 12000);
+    })();
+  </script>
+  <script>
+    (function () {
+      function isLocalHost(hostname) {
+        return hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname === '0.0.0.0' ||
+          hostname.endsWith('.local') ||
+          hostname.endsWith('.ts.net') ||
+          /^192\.168\./.test(hostname) ||
+          /^10\./.test(hostname) ||
+          /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname) ||
+          /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+      }
+
+      function loadFlutterBootstrap() {
+        const script = document.createElement('script');
+        script.src = 'flutter_bootstrap.js';
+        script.async = true;
+        document.body.appendChild(script);
+      }
+
+      async function clearLocalCaches() {
+        if ('serviceWorker' in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(registrations.map((registration) => registration.unregister()));
+        }
+
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((key) => caches.delete(key)));
+        }
+      }
+
+      if (!isLocalHost(window.location.hostname)) {
+        loadFlutterBootstrap();
+        return;
+      }
+
+      clearLocalCaches()
+        .catch((error) => {
+          console.warn('Local cache cleanup failed:', error);
+        })
+        .finally(loadFlutterBootstrap);
+    })();
+  </script>
 </body>
 </html>

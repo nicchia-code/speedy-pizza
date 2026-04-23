@@ -29,6 +29,8 @@ void main() {
   runApp(const SpeedyReaderApp());
 }
 
+enum _AppTab { home, reader }
+
 class SpeedyReaderApp extends StatelessWidget {
   const SpeedyReaderApp({super.key});
 
@@ -96,6 +98,7 @@ class _ReaderPageState extends State<ReaderPage>
   final TextEditingController _textController = TextEditingController(
     text: _demoText,
   );
+  final TextEditingController _draftTextController = TextEditingController();
   final TextEditingController _resumeController = TextEditingController(
     text: '1',
   );
@@ -113,7 +116,7 @@ class _ReaderPageState extends State<ReaderPage>
   double _wordsPerMinute = 320;
   bool _isPlaying = false;
   bool _showCompactSpeedSlider = false;
-  bool _showMobileOptions = false;
+  _AppTab _activeTab = _AppTab.home;
   String? _loadedFileName;
   String? _loadedFormatLabel;
   String _statusMessage =
@@ -122,20 +125,6 @@ class _ReaderPageState extends State<ReaderPage>
   bool get _hasWords => _words.isNotEmpty;
 
   String get _currentWord => _hasWords ? _words[_currentWordIndex] : 'Pronto';
-
-  String get _previousWord {
-    if (!_hasWords || _currentWordIndex == 0) {
-      return '--';
-    }
-    return _words[_currentWordIndex - 1];
-  }
-
-  String get _nextWord {
-    if (!_hasWords || _currentWordIndex + 1 >= _words.length) {
-      return '--';
-    }
-    return _words[_currentWordIndex + 1];
-  }
 
   double get _progress {
     if (!_hasWords) {
@@ -187,6 +176,10 @@ class _ReaderPageState extends State<ReaderPage>
 
   String get _activeSourceLabel => _prettifySourceName(_loadedFileName);
 
+  bool get _hasImportedSource => _loadedFileName != null;
+
+  String get _resumePointLabel => _hasWords ? '${_currentWordIndex + 1}' : '--';
+
   String _prettifySourceName(String? rawName) {
     if (rawName == null || rawName.trim().isEmpty) {
       return 'Demo';
@@ -232,6 +225,7 @@ class _ReaderPageState extends State<ReaderPage>
     _saveCurrentSession();
     _ticker.dispose();
     _textController.dispose();
+    _draftTextController.dispose();
     _resumeController.dispose();
     super.dispose();
   }
@@ -275,6 +269,7 @@ class _ReaderPageState extends State<ReaderPage>
     );
 
     _textController.text = chapterTexts[chapterIndex];
+    _draftTextController.clear();
     _loadedFileName = session.bookName ?? 'Ultimo libro';
     _loadedFormatLabel = session.formatLabel;
     _resumeController.text = (restoredIndex + 1).toString();
@@ -450,6 +445,9 @@ class _ReaderPageState extends State<ReaderPage>
           ? 'Caricato ${importedBook.name} (${importedBook.formatLabel}) con $chapterCount capitoli.'
           : 'Caricato ${importedBook.name} (${importedBook.formatLabel}). ${importedWords.length} parole pronte.';
       _prepareText(message: loadedMessage, keepChapterContext: true);
+      setState(() {
+        _activeTab = _AppTab.reader;
+      });
       _saveCurrentSession();
     } catch (error) {
       if (!mounted) {
@@ -474,6 +472,7 @@ class _ReaderPageState extends State<ReaderPage>
 
   void _loadDemoText() {
     _textController.text = _demoText;
+    _draftTextController.clear();
     _chapterTexts = const [_demoText];
     _chapterTitles = const ['Demo'];
     _activeChapterIndex = 0;
@@ -484,6 +483,9 @@ class _ReaderPageState extends State<ReaderPage>
       message: 'Demo ricaricata. La lettera centrale resta ancorata al centro.',
       keepChapterContext: true,
     );
+    setState(() {
+      _activeTab = _AppTab.reader;
+    });
   }
 
   void _loadBookChapters(ImportedBook importedBook) {
@@ -511,6 +513,33 @@ class _ReaderPageState extends State<ReaderPage>
     _loadedFileName = importedBook.name;
     _loadedFormatLabel = importedBook.formatLabel;
     _textController.text = _chapterTexts[_activeChapterIndex];
+    _draftTextController.clear();
+  }
+
+  void _loadDraftText() {
+    final normalized = _normalizeText(_draftTextController.text);
+    if (normalized.isEmpty) {
+      setState(() {
+        _statusMessage =
+            'Testo vuoto. Incolla qualcosa prima di preparare il reader.';
+      });
+      return;
+    }
+
+    _textController.text = normalized;
+    _chapterTexts = [normalized];
+    _chapterTitles = const ['Testo'];
+    _activeChapterIndex = 0;
+    _loadedFileName = 'Testo incollato';
+    _loadedFormatLabel = 'Testo';
+    _prepareText(
+      message:
+          '${_tokenize(normalized).length} parole pronte dal testo incollato.',
+      keepChapterContext: true,
+    );
+    setState(() {
+      _activeTab = _AppTab.reader;
+    });
   }
 
   void _prepareText({
@@ -615,6 +644,7 @@ class _ReaderPageState extends State<ReaderPage>
     setState(() {
       _currentWordIndex = targetIndex.toInt();
       _isPlaying = false;
+      _activeTab = _AppTab.reader;
       _statusMessage = 'Ripreso da ${targetIndex + 1} / ${_words.length}.';
     });
     _saveCurrentSession();
@@ -658,6 +688,11 @@ class _ReaderPageState extends State<ReaderPage>
   }
 
   void _togglePlayback() {
+    if (_activeTab != _AppTab.reader) {
+      setState(() {
+        _activeTab = _AppTab.reader;
+      });
+    }
     if (_isPlaying) {
       _pausePlayback();
       return;
@@ -722,23 +757,518 @@ class _ReaderPageState extends State<ReaderPage>
     }
   }
 
-  Widget _buildCompactPlayerHeader(BuildContext context) {
+  Future<void> _openAddContentSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final textTheme = Theme.of(sheetContext).textTheme;
+        return _buildSheetFrame(
+          context: sheetContext,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Aggiungi contenuto',
+                style: textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.9,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Importa un ebook, incolla un estratto oppure apri la demo. Da qui in poi il reader resta la vista principale.',
+                style: textTheme.bodyLarge?.copyWith(
+                  color: _muted,
+                  height: 1.45,
+                ),
+              ),
+              const SizedBox(height: 18),
+              _QuickActionTile(
+                icon: Icons.upload_file_rounded,
+                title: 'Carica ebook',
+                subtitle: 'EPUB, FB2, TXT, MD, HTML, PB',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _pickTextFile();
+                },
+              ),
+              const SizedBox(height: 12),
+              _QuickActionTile(
+                icon: Icons.notes_rounded,
+                title: 'Incolla testo',
+                subtitle: 'Per estratti, articoli o testi veloci',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _openPasteTextSheet();
+                },
+              ),
+              const SizedBox(height: 12),
+              _QuickActionTile(
+                icon: Icons.auto_stories_rounded,
+                title: 'Usa la demo',
+                subtitle: 'Riparti subito con il testo di esempio',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _loadDemoText();
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openPasteTextSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final textTheme = Theme.of(sheetContext).textTheme;
+        return _buildSheetFrame(
+          context: sheetContext,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Incolla testo',
+                  style: textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.9,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Questo testo diventa una sessione dedicata e viene salvato come contenuto separato.',
+                  style: textTheme.bodyLarge?.copyWith(
+                    color: _muted,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _draftTextController,
+                  minLines: 8,
+                  maxLines: 14,
+                  decoration: const InputDecoration(
+                    labelText: 'Testo',
+                    alignLabelWithHint: true,
+                    hintText: 'Incolla qui il testo da preparare.',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () {
+                        _loadDraftText();
+                        Navigator.of(sheetContext).pop();
+                      },
+                      icon: const Icon(Icons.bolt_rounded),
+                      label: const Text('Prepara reader'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        _draftTextController.clear();
+                      },
+                      icon: const Icon(Icons.clear_rounded),
+                      label: const Text('Svuota'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openChapterSheet() async {
+    if (_chapterTexts.length <= 1) {
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final textTheme = Theme.of(sheetContext).textTheme;
+        return _buildSheetFrame(
+          context: sheetContext,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Capitoli',
+                style: textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.9,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Salta subito in un altro punto del libro. Le statistiche restano riferite al capitolo attivo.',
+                style: textTheme.bodyLarge?.copyWith(
+                  color: _muted,
+                  height: 1.45,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ..._chapterTitles.asMap().entries.map((entry) {
+                final index = entry.key;
+                final isSelected = index == _activeChapterIndex;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _QuickActionTile(
+                    icon: isSelected
+                        ? Icons.radio_button_checked_rounded
+                        : Icons.menu_book_rounded,
+                    title: '${index + 1}. ${entry.value}',
+                    subtitle: isSelected
+                        ? 'Capitolo attivo'
+                        : 'Apri questo capitolo nel reader',
+                    selected: isSelected,
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      _selectChapter(index);
+                      setState(() {
+                        _activeTab = _AppTab.reader;
+                      });
+                    },
+                  ),
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openOptionsSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            final textTheme = Theme.of(sheetContext).textTheme;
+            return _buildSheetFrame(
+              context: sheetContext,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Opzioni reader',
+                      style: textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.9,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Qui restano velocita, ripresa, capitoli e azioni di servizio. La vista principale rimane pulita.',
+                      style: textTheme.bodyLarge?.copyWith(
+                        color: _muted,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        _MetricCard(
+                          label: 'Capitolo',
+                          value:
+                              '${_activeChapterIndex + 1} / ${_chapterTexts.length}',
+                          compact: true,
+                        ),
+                        _MetricCard(
+                          label: 'Parole',
+                          value: _words.length.toString(),
+                          compact: true,
+                        ),
+                        _MetricCard(
+                          label: 'Posizione',
+                          value: _hasWords
+                              ? '${_currentWordIndex + 1} / ${_words.length}'
+                              : '--',
+                          compact: true,
+                        ),
+                        _MetricCard(
+                          label: 'Tempo',
+                          value: _etaLabel,
+                          compact: true,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Text(
+                          'Velocita',
+                          style: textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -0.6,
+                          ),
+                        ),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _accentSoft,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            '${_wordsPerMinute.round()} WPM',
+                            style: textTheme.titleSmall?.copyWith(
+                              color: _accent,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      min: 120,
+                      max: 900,
+                      divisions: 39,
+                      value: _wordsPerMinute,
+                      label: '${_wordsPerMinute.round()}',
+                      onChanged: (value) {
+                        _setSpeed(value);
+                        setSheetState(() {});
+                      },
+                    ),
+                    Text(
+                      'Il ticker segue il tempo reale, cosi la cadenza resta stabile anche su device meno performanti.',
+                      style: textTheme.bodySmall?.copyWith(
+                        color: _muted,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'Riprendi da posizione',
+                      style: textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.6,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _resumeController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Posizione parola (1 ...)',
+                        hintText: 'Es. 120',
+                        suffixIcon: Icon(Icons.pin_end_rounded),
+                      ),
+                      onSubmitted: (_) {
+                        _resumeFromInput();
+                        setSheetState(() {});
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: () {
+                            _resumeFromInput();
+                            setSheetState(() {});
+                          },
+                          icon: const Icon(
+                            Icons.playlist_add_check_circle_rounded,
+                          ),
+                          label: const Text('Riprendi'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            _setResumeFromCurrent();
+                            setSheetState(() {});
+                          },
+                          icon: const Icon(Icons.bookmark_added_rounded),
+                          label: Text('Punto $_resumePointLabel'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            _restartPlayback();
+                            setSheetState(() {});
+                          },
+                          icon: const Icon(Icons.restart_alt_rounded),
+                          label: const Text('Dall inizio'),
+                        ),
+                      ],
+                    ),
+                    if (_chapterTexts.length > 1) ...[
+                      const SizedBox(height: 22),
+                      Row(
+                        children: [
+                          Text(
+                            'Capitoli',
+                            style: textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: -0.6,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            '${_chapterTexts.length} totali',
+                            style: textTheme.bodyMedium?.copyWith(
+                              color: _muted,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      ..._chapterTitles.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final isSelected = index == _activeChapterIndex;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _QuickActionTile(
+                            icon: isSelected
+                                ? Icons.radio_button_checked_rounded
+                                : Icons.chevron_right_rounded,
+                            title:
+                                '${index + 1}. ${_compactChapterLabel(entry.value)}',
+                            subtitle: isSelected
+                                ? 'Capitolo attivo'
+                                : 'Apri questo capitolo',
+                            selected: isSelected,
+                            onTap: () {
+                              _selectChapter(index);
+                              setSheetState(() {});
+                            },
+                          ),
+                        );
+                      }),
+                    ],
+                    const SizedBox(height: 22),
+                    Text(
+                      'Contenuto',
+                      style: textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.6,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        FilledButton.tonalIcon(
+                          onPressed: () {
+                            Navigator.of(sheetContext).pop();
+                            _openAddContentSheet();
+                          },
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Nuovo contenuto'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.of(sheetContext).pop();
+                            _openPasteTextSheet();
+                          },
+                          icon: const Icon(Icons.notes_rounded),
+                          label: const Text('Incolla testo'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF7EFE8),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: _panelBorder),
+                      ),
+                      child: Text(
+                        _statusMessage,
+                        style: textTheme.bodyMedium?.copyWith(
+                          color: _muted,
+                          height: 1.45,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildSheetFrame({
+    required BuildContext context,
+    required Widget child,
+  }) {
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(12, 12, 12, viewInsets.bottom + 12),
+        child: DecoratedBox(
+          decoration: _panelDecoration(radius: 30),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayerCard(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+      padding: EdgeInsets.fromLTRB(
+        compact ? 16 : 20,
+        compact ? 16 : 18,
+        compact ? 16 : 20,
+        compact ? 14 : 18,
+      ),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
         ),
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(compact ? 24 : 28),
         boxShadow: const [
           BoxShadow(
             color: Color(0x22000000),
-            blurRadius: 22,
-            offset: Offset(0, 12),
+            blurRadius: 24,
+            offset: Offset(0, 14),
           ),
         ],
       ),
@@ -907,30 +1437,49 @@ class _ReaderPageState extends State<ReaderPage>
             ],
           ),
           const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: () {
-              setState(() {
-                _showMobileOptions = !_showMobileOptions;
-              });
-            },
-            icon: Icon(
-              _showMobileOptions ? Icons.tune_rounded : Icons.tune_outlined,
-            ),
-            label: Text(_showMobileOptions ? 'Nascondi opzioni' : 'Opzioni'),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(48),
-              backgroundColor: Colors.white.withValues(alpha: 0.08),
-              foregroundColor: Colors.white,
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              if (_chapterTexts.length > 1)
+                OutlinedButton.icon(
+                  onPressed: _openChapterSheet,
+                  icon: const Icon(Icons.library_books_rounded),
+                  label: const Text('Capitoli'),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: 0.08),
+                    foregroundColor: Colors.white,
+                    side: BorderSide(
+                      color: Colors.white.withValues(alpha: 0.12),
+                    ),
+                  ),
+                ),
+              OutlinedButton.icon(
+                onPressed: _setResumeFromCurrent,
+                icon: const Icon(Icons.bookmark_added_rounded),
+                label: Text('Punto $_resumePointLabel'),
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: Colors.white.withValues(alpha: 0.08),
+                  foregroundColor: Colors.white,
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+                ),
               ),
-            ),
+              OutlinedButton.icon(
+                onPressed: _openOptionsSheet,
+                icon: const Icon(Icons.tune_rounded),
+                label: const Text('Opzioni'),
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: Colors.white.withValues(alpha: 0.08),
+                  foregroundColor: Colors.white,
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Text(
             _statusMessage,
-            maxLines: 2,
+            maxLines: compact ? 2 : 3,
             overflow: TextOverflow.ellipsis,
             style: textTheme.bodySmall?.copyWith(
               color: Colors.white.withValues(alpha: 0.74),
@@ -967,9 +1516,38 @@ class _ReaderPageState extends State<ReaderPage>
 
   @override
   Widget build(BuildContext context) {
-    final screenSize = MediaQuery.sizeOf(context);
-
     return Scaffold(
+      extendBody: true,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _openAddContentSheet,
+        backgroundColor: _accent,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add_rounded),
+        label: Text(
+          _activeTab == _AppTab.reader ? 'Nuovo' : 'Aggiungi',
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _activeTab.index,
+        onDestinationSelected: (index) {
+          setState(() {
+            _activeTab = _AppTab.values[index];
+          });
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home_rounded),
+            label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.play_circle_outline_rounded),
+            selectedIcon: Icon(Icons.play_circle_filled_rounded),
+            label: 'Reader',
+          ),
+        ],
+      ),
       body: DecoratedBox(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -981,56 +1559,17 @@ class _ReaderPageState extends State<ReaderPage>
         child: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final isWide = constraints.maxWidth >= 1120;
               final isCompact = constraints.maxWidth < 760;
-              final readerHeight = isCompact
-                  ? (screenSize.height * 0.36).clamp(250.0, 340.0)
-                  : 420.0;
-
-              return SingleChildScrollView(
-                padding: EdgeInsets.all(isCompact ? 14 : 24),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1380),
-                    child: isWide
-                        ? Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: _buildReaderPanel(
-                                  context,
-                                  compact: false,
-                                  readerHeight: readerHeight,
-                                ),
-                              ),
-                              const SizedBox(width: 24),
-                              SizedBox(
-                                width: 400,
-                                child: _buildControlPanel(
-                                  context,
-                                  compact: false,
-                                ),
-                              ),
-                            ],
-                          )
-                        : Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              _buildReaderPanel(
-                                context,
-                                compact: isCompact,
-                                readerHeight: readerHeight,
-                              ),
-                              if (isCompact && _showMobileOptions)
-                                const SizedBox(height: 16),
-                              if (!isCompact) const SizedBox(height: 24),
-                              if (!isCompact || _showMobileOptions)
-                                _buildControlPanel(context, compact: isCompact),
-                            ],
-                          ),
-                  ),
-                ),
+              final page = AnimatedSwitcher(
+                duration: const Duration(milliseconds: 280),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: _activeTab == _AppTab.home
+                    ? _buildHomeTab(context, compact: isCompact)
+                    : _buildReaderTab(context, compact: isCompact),
               );
+
+              return page;
             },
           ),
         ),
@@ -1038,414 +1577,648 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
-  Widget _buildControlPanel(BuildContext context, {required bool compact}) {
+  Widget _buildHomeTab(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
-    final sectionPadding = compact ? 18.0 : 28.0;
-
-    return DecoratedBox(
-      decoration: _panelDecoration(radius: compact ? 24 : 32),
-      child: Padding(
-        padding: EdgeInsets.all(sectionPadding),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Speedy Reader',
-              style:
-                  (compact ? textTheme.headlineSmall : textTheme.headlineMedium)
-                      ?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: compact ? -1.0 : -1.4,
-                      ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              compact
-                  ? 'Importa un ebook, regola i WPM e leggi una parola alla volta con il pivot evidenziato.'
-                  : 'Webapp Flutter per leggere una parola alla volta, con la lettera centrale evidenziata e il ritmo controllato in WPM.',
-              style: textTheme.bodyLarge?.copyWith(color: _muted, height: 1.45),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                FilledButton.icon(
-                  onPressed: _pickTextFile,
-                  icon: const Icon(Icons.upload_file_rounded),
-                  label: const Text('Carica ebook'),
+    return SingleChildScrollView(
+      key: const ValueKey('home-tab'),
+      padding: EdgeInsets.fromLTRB(14, 14, 14, compact ? 108 : 28),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1040),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 18 : 24,
+                  compact ? 18 : 22,
+                  compact ? 18 : 24,
+                  compact ? 18 : 22,
                 ),
-                OutlinedButton.icon(
-                  onPressed: _loadDemoText,
-                  icon: const Icon(Icons.auto_stories_rounded),
-                  label: const Text('Usa demo'),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF2D1A15), Color(0xFF6B3522)],
+                  ),
+                  borderRadius: BorderRadius.circular(compact ? 28 : 34),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x22000000),
+                      blurRadius: 24,
+                      offset: Offset(0, 16),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Formati supportati: EPUB, FB2, TXT, MD, HTML, PB.',
-              style: textTheme.bodyMedium?.copyWith(
-                color: _muted,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            if (_loadedFileName != null) ...[
-              const SizedBox(height: 10),
-              Text(
-                _loadedFormatLabel == null
-                    ? 'Ultimo file: ${_prettifySourceName(_loadedFileName)}'
-                    : 'Ultimo file: ${_prettifySourceName(_loadedFileName)} · $_loadedFormatLabel',
-                style: textTheme.bodyMedium?.copyWith(
-                  color: _muted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-            const SizedBox(height: 18),
-            if (_chapterTexts.length > 1) ...[
-              Text(
-                'Capitoli',
-                style: textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _chapterTitles.asMap().entries.map((entry) {
-                  final index = entry.key;
-                  final title = entry.value;
-                  final isSelected = index == _activeChapterIndex;
-
-                  return SizedBox(
-                    width: 140,
-                    child: isSelected
-                        ? FilledButton(
-                            onPressed: null,
-                            child: Text(
-                              '${index + 1}. ${_compactChapterLabel(title)}',
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          )
-                        : OutlinedButton(
-                            onPressed: () => _selectChapter(index),
-                            child: Text(
-                              '${index + 1}. ${_compactChapterLabel(title)}',
-                              overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            'SPEEDY READER',
+                            style: textTheme.labelLarge?.copyWith(
+                              color: const Color(0xFFFFD5C2),
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 1.1,
                             ),
                           ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 14),
-            ],
-            TextField(
-              controller: _textController,
-              minLines: compact ? 7 : 10,
-              maxLines: compact ? 11 : 16,
-              decoration: const InputDecoration(
-                labelText: 'Testo da leggere',
-                alignLabelWithHint: true,
-                hintText:
-                    'Incolla qui il testo dell ebook oppure carica un file supportato.',
-              ),
-            ),
-            const SizedBox(height: 14),
-            FilledButton.tonalIcon(
-              onPressed: _prepareText,
-              icon: const Icon(Icons.bolt_rounded),
-              label: const Text('Prepara testo'),
-            ),
-            const SizedBox(height: 18),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                _MetricCard(
-                  label: 'Capitolo',
-                  value: '${_activeChapterIndex + 1} / ${_chapterTexts.length}',
-                  compact: compact,
-                ),
-                _MetricCard(
-                  label: 'Parole',
-                  value: _words.length.toString(),
-                  compact: compact,
-                ),
-                _MetricCard(
-                  label: 'Posizione',
-                  value: _hasWords
-                      ? '${_currentWordIndex + 1} / ${_words.length}'
-                      : '--',
-                  compact: compact,
-                ),
-                _MetricCard(label: 'Tempo', value: _etaLabel, compact: compact),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Text(
-              'Riprendi da posizione',
-              style: textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _resumeController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Posizione parola (1 ...)',
-                hintText: 'Es. 120',
-                suffixIcon: Icon(Icons.pin_end_rounded),
-              ),
-              onSubmitted: (_) => _resumeFromInput(),
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                FilledButton.icon(
-                  onPressed: _resumeFromInput,
-                  icon: const Icon(Icons.playlist_add_check_circle_rounded),
-                  label: const Text('Riprendi da qui'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _setResumeFromCurrent,
-                  icon: const Icon(Icons.tag_rounded),
-                  label: const Text('Salva punto attuale'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                Text(
-                  'Velocita',
-                  style: textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _accentSoft,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    '${_wordsPerMinute.round()} WPM',
-                    style: textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      color: _accent,
+                        ),
+                        const Spacer(),
+                        IconButton.filledTonal(
+                          onPressed: _openOptionsSheet,
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.12,
+                            ),
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.tune_rounded),
+                        ),
+                      ],
                     ),
-                  ),
-                ),
-              ],
-            ),
-            Slider(
-              min: 120,
-              max: 900,
-              divisions: 39,
-              value: _wordsPerMinute,
-              label: '${_wordsPerMinute.round()}',
-              onChanged: _setSpeed,
-            ),
-            Text(
-              compact
-                  ? 'Timing frame based: la velocita segue il tempo reale ed evita drift.'
-                  : 'Il reader usa un ticker frame based: il timing segue il tempo trascorso reale e non accumula drift parola dopo parola.',
-              style: textTheme.bodySmall?.copyWith(color: _muted, height: 1.5),
-            ),
-            if (!compact) ...[
-              const SizedBox(height: 18),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  FilledButton.icon(
-                    onPressed: _togglePlayback,
-                    icon: Icon(
-                      _isPlaying
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
+                    const SizedBox(height: 18),
+                    Text(
+                      _hasImportedSource
+                          ? _activeSourceLabel
+                          : 'Pronto per la prossima sessione',
+                      style:
+                          (compact
+                                  ? textTheme.headlineMedium
+                                  : textTheme.displaySmall)
+                              ?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: compact ? -1.2 : -1.8,
+                                height: 0.95,
+                              ),
                     ),
-                    label: Text(_isPlaying ? 'Pause' : 'Play'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _restartPlayback,
-                    icon: const Icon(Icons.restart_alt_rounded),
-                    label: const Text('Restart'),
-                  ),
-                  OutlinedButton(
-                    onPressed: () => _skipWords(-10),
-                    child: const Text('-10'),
-                  ),
-                  OutlinedButton(
-                    onPressed: () => _skipWords(10),
-                    child: const Text('+10'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Text(
-                _statusMessage,
-                style: textTheme.bodyMedium?.copyWith(
-                  color: _muted,
-                  height: 1.5,
+                    const SizedBox(height: 10),
+                    Text(
+                      _hasImportedSource
+                          ? 'Riprendi da ${_activeChapterLabel}, parola ${_currentWordIndex + 1}. Il reader resta il cuore dell app, il resto e solo contorno.'
+                          : 'Importa un ebook, incolla un testo oppure apri la demo e passa subito alla lettura.',
+                      style: textTheme.bodyLarge?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.76),
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _activeTab = _AppTab.reader;
+                            });
+                          },
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFFFE1D6),
+                            foregroundColor: _ink,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 16,
+                            ),
+                          ),
+                          icon: const Icon(Icons.play_circle_fill_rounded),
+                          label: Text(
+                            _hasImportedSource
+                                ? 'Continua lettura'
+                                : 'Apri reader',
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _openAddContentSheet,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.16),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 16,
+                            ),
+                          ),
+                          icon: const Icon(Icons.library_add_rounded),
+                          label: const Text('Aggiungi contenuto'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(999),
+                      child: LinearProgressIndicator(
+                        minHeight: 7,
+                        value: _progress,
+                        backgroundColor: Colors.white.withValues(alpha: 0.14),
+                        color: const Color(0xFFFFB089),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _InlineStatPill(
+                          label: 'Posizione',
+                          value: _hasWords
+                              ? '${_currentWordIndex + 1} / ${_words.length}'
+                              : '--',
+                          dark: true,
+                        ),
+                        _InlineStatPill(
+                          label: 'Capitolo',
+                          value:
+                              '${_activeChapterIndex + 1} / ${_chapterTexts.length}',
+                          dark: true,
+                        ),
+                        _InlineStatPill(
+                          label: 'WPM',
+                          value: '${_wordsPerMinute.round()}',
+                          dark: true,
+                        ),
+                        _InlineStatPill(
+                          label: 'ETA',
+                          value: _etaLabel,
+                          dark: true,
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildReaderPanel(
-    BuildContext context, {
-    required bool compact,
-    required double readerHeight,
-  }) {
-    final textTheme = Theme.of(context).textTheme;
-    final sectionPadding = compact ? 18.0 : 28.0;
-
-    return DecoratedBox(
-      decoration: _panelDecoration(radius: compact ? 24 : 32),
-      child: Padding(
-        padding: EdgeInsets.all(sectionPadding),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!compact) ...[
+              const SizedBox(height: 22),
               Text(
-                'Reader',
+                'Scorciatoie',
                 style: textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w900,
-                  letterSpacing: -0.8,
+                  letterSpacing: -0.9,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
-                'La lettera evidenziata resta fissa al centro del box. Il resto della parola si muove attorno al pivot per ridurre i micro salti oculari.',
+                'Azioni veloci da app: poche, chiare e sempre nello stesso posto.',
                 style: textTheme.bodyLarge?.copyWith(
                   color: _muted,
                   height: 1.45,
                 ),
               ),
-              const SizedBox(height: 20),
-            ],
-            Container(
-              height: readerHeight,
-              padding: EdgeInsets.all(compact ? 16 : 24),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF7EFE8),
-                borderRadius: BorderRadius.circular(compact ? 22 : 28),
-                border: Border.all(color: _panelBorder),
-              ),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Container(
-                    width: 2,
-                    height: compact ? 140 : 200,
-                    decoration: BoxDecoration(
-                      color: _accent.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                  ),
-                  Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+              const SizedBox(height: 14),
+              LayoutBuilder(
+                builder: (context, actionConstraints) {
+                  final tileWidth = compact
+                      ? (actionConstraints.maxWidth - 12) / 2
+                      : 230.0;
+
+                  return Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
                     children: [
-                      Text(
-                        'Una parola alla volta',
-                        style: textTheme.labelLarge?.copyWith(
-                          color: _muted,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.3,
+                      SizedBox(
+                        width: tileWidth,
+                        child: _QuickActionTile(
+                          icon: Icons.play_circle_fill_rounded,
+                          title: 'Apri reader',
+                          subtitle: 'Torna subito alla lettura',
+                          onTap: () {
+                            setState(() {
+                              _activeTab = _AppTab.reader;
+                            });
+                          },
                         ),
                       ),
-                      SizedBox(height: compact ? 18 : 28),
-                      Expanded(
-                        child: Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: compact ? 4 : 12,
-                            vertical: compact ? 6 : 10,
-                          ),
-                          child: RepaintBoundary(
-                            child: SizedBox.expand(
-                              child: _PivotAlignedWord(
-                                word: _currentWord,
-                                accentColor: _accent,
-                                textColor: _ink,
-                              ),
+                      SizedBox(
+                        width: tileWidth,
+                        child: _QuickActionTile(
+                          icon: Icons.upload_file_rounded,
+                          title: 'Aggiungi ebook',
+                          subtitle: 'Import rapido dal device',
+                          onTap: _openAddContentSheet,
+                        ),
+                      ),
+                      SizedBox(
+                        width: tileWidth,
+                        child: _QuickActionTile(
+                          icon: Icons.notes_rounded,
+                          title: 'Incolla testo',
+                          subtitle: 'Per note, articoli o estratti',
+                          onTap: _openPasteTextSheet,
+                        ),
+                      ),
+                      SizedBox(
+                        width: tileWidth,
+                        child: _QuickActionTile(
+                          icon: _chapterTexts.length > 1
+                              ? Icons.library_books_rounded
+                              : Icons.tune_rounded,
+                          title: _chapterTexts.length > 1
+                              ? 'Capitoli'
+                              : 'Opzioni',
+                          subtitle: _chapterTexts.length > 1
+                              ? 'Apri la mappa del libro'
+                              : 'Velocita, ripresa e stato',
+                          onTap: _chapterTexts.length > 1
+                              ? _openChapterSheet
+                              : _openOptionsSheet,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 22),
+              DecoratedBox(
+                decoration: _panelDecoration(radius: compact ? 24 : 30),
+                child: Padding(
+                  padding: EdgeInsets.all(compact ? 18 : 22),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Sessione attiva',
+                                  style: textTheme.titleLarge?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: -0.6,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  '${_activeSourceLabel} · ${_loadedFormatLabel ?? 'Testo'}',
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    color: _muted,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                        ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 14,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _accentSoft,
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Riprendi da',
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: _muted,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _resumePointLabel,
+                                  style: textTheme.headlineSmall?.copyWith(
+                                    color: _accent,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: -1,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 16),
                       Wrap(
-                        alignment: WrapAlignment.center,
-                        spacing: compact ? 12 : 24,
+                        spacing: 12,
                         runSpacing: 12,
                         children: [
-                          _MiniHint(
-                            label: 'Index',
-                            value: _hasWords
-                                ? '${_currentWordIndex + 1} / ${_words.length}'
-                                : '--',
+                          _MetricCard(
+                            label: 'Capitolo',
+                            value:
+                                '${_activeChapterIndex + 1} / ${_chapterTexts.length}',
+                            compact: compact,
+                          ),
+                          _MetricCard(
+                            label: 'Parole',
+                            value: _words.length.toString(),
+                            compact: compact,
+                          ),
+                          _MetricCard(
+                            label: 'WPM',
+                            value: '${_wordsPerMinute.round()}',
+                            compact: compact,
+                          ),
+                          _MetricCard(
+                            label: 'Tempo',
+                            value: _etaLabel,
                             compact: compact,
                           ),
                         ],
                       ),
                     ],
                   ),
-                ],
-              ),
-            ),
-            if (compact) ...[
-              const SizedBox(height: 16),
-              _buildCompactPlayerHeader(context),
-            ],
-            if (!compact) ...[
-              const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: LinearProgressIndicator(
-                  minHeight: 10,
-                  value: _progress,
-                  backgroundColor: _track,
-                  color: _accent,
                 ),
               ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Text(
-                    'Progress',
-                    style: textTheme.bodyMedium?.copyWith(
-                      color: _muted,
-                      fontWeight: FontWeight.w700,
-                    ),
+              if (_chapterTexts.length > 1) ...[
+                const SizedBox(height: 22),
+                Text(
+                  'Mappa capitoli',
+                  style: textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.9,
                   ),
-                  const Spacer(),
-                  Text(
-                    _hasWords
-                        ? '${(_progress * 100).toStringAsFixed(0)}% completato'
-                        : 'Nessun testo pronto',
-                    style: textTheme.bodyMedium?.copyWith(
-                      color: _muted,
-                      fontWeight: FontWeight.w700,
-                    ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Tocca un capitolo per saltare subito nel reader.',
+                  style: textTheme.bodyLarge?.copyWith(
+                    color: _muted,
+                    height: 1.45,
                   ),
-                ],
+                ),
+                const SizedBox(height: 14),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: _chapterTitles.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final selected = index == _activeChapterIndex;
+                      return Padding(
+                        padding: EdgeInsets.only(
+                          right: index == _chapterTitles.length - 1 ? 0 : 10,
+                        ),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(22),
+                          onTap: () {
+                            _selectChapter(index);
+                            setState(() {
+                              _activeTab = _AppTab.reader;
+                            });
+                          },
+                          child: Container(
+                            width: compact ? 190 : 220,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: selected ? _accentSoft : _panel,
+                              borderRadius: BorderRadius.circular(22),
+                              border: Border.all(
+                                color: selected ? _accent : _panelBorder,
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Capitolo ${index + 1}',
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: selected ? _accent : _muted,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  entry.value,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: -0.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 22),
+              DecoratedBox(
+                decoration: _panelDecoration(radius: compact ? 24 : 30),
+                child: Padding(
+                  padding: EdgeInsets.all(compact ? 18 : 22),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Stato attuale',
+                        style: textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -0.6,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _statusMessage,
+                        style: textTheme.bodyLarge?.copyWith(
+                          color: _muted,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReaderTab(BuildContext context, {required bool compact}) {
+    final screenSize = MediaQuery.sizeOf(context);
+    final readerHeight = compact
+        ? (screenSize.height * 0.36).clamp(250.0, 360.0)
+        : (screenSize.height * 0.44).clamp(340.0, 520.0);
+    final textTheme = Theme.of(context).textTheme;
+    final sectionPadding = compact ? 16.0 : 24.0;
+
+    return SingleChildScrollView(
+      key: const ValueKey('reader-tab'),
+      padding: EdgeInsets.fromLTRB(14, 14, 14, compact ? 108 : 28),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1040),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DecoratedBox(
+                decoration: _panelDecoration(radius: compact ? 24 : 30),
+                child: Padding(
+                  padding: EdgeInsets.all(sectionPadding),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _activeSourceLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  (compact
+                                          ? textTheme.headlineSmall
+                                          : textTheme.headlineMedium)
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: -1.0,
+                                      ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '${_loadedFormatLabel ?? 'Testo'} · ${_activeChapterLabel}',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: textTheme.bodyLarge?.copyWith(
+                                color: _muted,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      IconButton.filledTonal(
+                        onPressed: () {
+                          setState(() {
+                            _activeTab = _AppTab.home;
+                          });
+                        },
+                        icon: const Icon(Icons.grid_view_rounded),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton.filledTonal(
+                        onPressed: _openOptionsSheet,
+                        icon: const Icon(Icons.tune_rounded),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              DecoratedBox(
+                decoration: _panelDecoration(radius: compact ? 24 : 30),
+                child: Padding(
+                  padding: EdgeInsets.all(sectionPadding),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          _InlineStatPill(
+                            label: 'Capitolo',
+                            value:
+                                '${_activeChapterIndex + 1} / ${_chapterTexts.length}',
+                          ),
+                          _InlineStatPill(
+                            label: 'Posizione',
+                            value: _hasWords
+                                ? '${_currentWordIndex + 1} / ${_words.length}'
+                                : '--',
+                          ),
+                          _InlineStatPill(label: 'ETA', value: _etaLabel),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      Container(
+                        height: readerHeight,
+                        padding: EdgeInsets.all(compact ? 16 : 24),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7EFE8),
+                          borderRadius: BorderRadius.circular(
+                            compact ? 22 : 28,
+                          ),
+                          border: Border.all(color: _panelBorder),
+                        ),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Container(
+                              width: 2,
+                              height: compact ? 140 : 200,
+                              decoration: BoxDecoration(
+                                color: _accent.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  'Una parola alla volta',
+                                  style: textTheme.labelLarge?.copyWith(
+                                    color: _muted,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.3,
+                                  ),
+                                ),
+                                SizedBox(height: compact ? 18 : 28),
+                                Expanded(
+                                  child: Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: compact ? 4 : 12,
+                                      vertical: compact ? 6 : 10,
+                                    ),
+                                    child: RepaintBoundary(
+                                      child: SizedBox.expand(
+                                        child: _PivotAlignedWord(
+                                          word: _currentWord,
+                                          accentColor: _accent,
+                                          textColor: _ink,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Wrap(
+                                  alignment: WrapAlignment.center,
+                                  spacing: compact ? 12 : 24,
+                                  runSpacing: 12,
+                                  children: [
+                                    _MiniHint(
+                                      label: 'Index',
+                                      value: _hasWords
+                                          ? '${_currentWordIndex + 1} / ${_words.length}'
+                                          : '--',
+                                      compact: compact,
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              _buildPlayerCard(context, compact: compact),
+            ],
+          ),
         ),
       ),
     );
@@ -1542,6 +2315,136 @@ class _MiniHint extends StatelessWidget {
                 ?.copyWith(fontWeight: FontWeight.w800),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _QuickActionTile extends StatelessWidget {
+  const _QuickActionTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(22),
+      onTap: onTap,
+      child: Ink(
+        decoration: BoxDecoration(
+          color: selected ? _accentSoft : _panel,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: selected ? _accent : _panelBorder),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: selected ? _accent : const Color(0xFFF7EFE8),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(icon, color: selected ? Colors.white : _accent),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.4,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.bodySmall?.copyWith(
+                        color: _muted,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineStatPill extends StatelessWidget {
+  const _InlineStatPill({
+    required this.label,
+    required this.value,
+    this.dark = false,
+  });
+
+  final String label;
+  final String value;
+  final bool dark;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final background = dark
+        ? Colors.white.withValues(alpha: 0.1)
+        : const Color(0xFFF7EFE8);
+    final foreground = dark ? Colors.white : _ink;
+    final muted = dark ? Colors.white.withValues(alpha: 0.68) : _muted;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: dark ? Colors.white.withValues(alpha: 0.08) : _panelBorder,
+        ),
+      ),
+      child: RichText(
+        text: TextSpan(
+          children: [
+            TextSpan(
+              text: '$label ',
+              style: textTheme.bodySmall?.copyWith(
+                color: muted,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            TextSpan(
+              text: value,
+              style: textTheme.labelLarge?.copyWith(
+                color: foreground,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
