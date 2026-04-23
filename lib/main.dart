@@ -1134,117 +1134,178 @@ class _ReaderPageState extends State<ReaderPage>
   }
 
   Widget _buildBottomPlayerNavigation(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-    final leftTab = switch (_activeTab) {
-      _AppTab.home => null,
-      _AppTab.reader => _AppTab.home,
-      _AppTab.settings => _AppTab.reader,
-    };
-    final rightTab = switch (_activeTab) {
-      _AppTab.home => _AppTab.reader,
-      _AppTab.reader => _AppTab.settings,
-      _AppTab.settings => null,
-    };
-
-    final title = switch (_activeTab) {
-      _AppTab.home => 'Home',
-      _AppTab.reader => 'Reader',
-      _AppTab.settings => 'Impostazioni',
-    };
-    final subtitle = switch (_activeTab) {
-      _AppTab.home =>
-        'Ultima sessione: capitolo $_chapterProgressLabel · $_etaLabel',
-      _AppTab.reader => '${_activeSourceLabel} · ETA $_etaLabel',
-      _AppTab.settings => 'Velocita, ripresa, capitoli e contenuti',
-    };
+    final isPlayerMode = _isPlaying;
 
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-        child: Container(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
+            gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
+              colors: isPlayerMode
+                  ? const [Color(0xFFE4542D), Color(0xFF8E2916)]
+                  : const [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
             ),
-            borderRadius: BorderRadius.circular(26),
-            boxShadow: const [
+            borderRadius: BorderRadius.circular(isPlayerMode ? 28 : 26),
+            boxShadow: [
               BoxShadow(
-                color: Color(0x22000000),
-                blurRadius: 24,
-                offset: Offset(0, 14),
+                color: isPlayerMode
+                    ? const Color(0x30E4542D)
+                    : const Color(0x22000000),
+                blurRadius: isPlayerMode ? 28 : 24,
+                offset: const Offset(0, 14),
               ),
             ],
           ),
-          child: Row(
-            children: [
-              _buildBottomNavButton(tab: leftTab),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: textTheme.bodySmall?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.72),
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              _buildBottomNavButton(tab: rightTab),
-            ],
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 240),
+            switchInCurve: Curves.easeOutBack,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) {
+              final offset = Tween<Offset>(
+                begin: const Offset(0, 0.18),
+                end: Offset.zero,
+              ).animate(animation);
+              return FadeTransition(
+                opacity: animation,
+                child: SlideTransition(position: offset, child: child),
+              );
+            },
+            child: isPlayerMode
+                ? _buildActivePlayerBar(context)
+                : _buildIdleNavigationBar(context),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildBottomNavButton({required _AppTab? tab}) {
-    if (tab == null) {
-      return const SizedBox(width: 52, height: 52);
-    }
-
-    final icon = switch (tab) {
-      _AppTab.home => Icons.home_rounded,
-      _AppTab.reader => Icons.play_circle_fill_rounded,
-      _AppTab.settings => Icons.settings_rounded,
-    };
-
-    return SizedBox(
-      width: 52,
-      height: 52,
-      child: OutlinedButton(
-        onPressed: () => _navigateToTab(tab),
-        style: OutlinedButton.styleFrom(
-          padding: EdgeInsets.zero,
-          backgroundColor: Colors.white.withValues(alpha: 0.08),
-          foregroundColor: Colors.white,
-          side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
+  Widget _buildIdleNavigationBar(BuildContext context) {
+    return Row(
+      key: const ValueKey('bottom-nav-idle'),
+      children: [
+        Expanded(
+          child: _buildIdleNavButton(
+            tab: _AppTab.home,
+            icon: Icons.home_rounded,
           ),
         ),
-        child: Icon(icon, size: 22),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _buildIdleNavButton(
+            tab: _AppTab.reader,
+            icon: Icons.play_circle_fill_rounded,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _buildIdleNavButton(
+            tab: _AppTab.settings,
+            icon: Icons.settings_rounded,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildIdleNavButton({required _AppTab tab, required IconData icon}) {
+    final isSelected = _activeTab == tab;
+
+    return SizedBox(
+      height: 54,
+      child: FilledButton(
+        onPressed: () => _navigateToTab(tab),
+        style: FilledButton.styleFrom(
+          padding: EdgeInsets.zero,
+          elevation: 0,
+          backgroundColor: isSelected
+              ? Colors.white.withValues(alpha: 0.18)
+              : Colors.white.withValues(alpha: 0.06),
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+        ),
+        child: Icon(icon, size: isSelected ? 24 : 22),
+      ),
+    );
+  }
+
+  Widget _buildActivePlayerBar(BuildContext context) {
+    return Row(
+      key: const ValueKey('bottom-nav-player'),
+      children: [
+        Expanded(
+          child: _buildPlayerModeButton(
+            icon: Icons.fast_rewind_rounded,
+            onPressed: _hasWords ? () => _adjustSpeedBy(-20) : null,
+            tooltip: 'Rallenta di 20 WPM',
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: SizedBox(
+            height: 56,
+            child: FilledButton(
+              onPressed: _togglePlayback,
+              style: FilledButton.styleFrom(
+                elevation: 0,
+                backgroundColor: Colors.white,
+                foregroundColor: _accent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
+              child: Icon(
+                _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                size: 28,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _buildPlayerModeButton(
+            icon: Icons.fast_forward_rounded,
+            onPressed: _hasWords ? () => _adjustSpeedBy(20) : null,
+            tooltip: 'Velocizza di 20 WPM',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPlayerModeButton({
+    required IconData icon,
+    required VoidCallback? onPressed,
+    required String tooltip,
+  }) {
+    return SizedBox(
+      height: 56,
+      child: Tooltip(
+        message: tooltip,
+        child: FilledButton(
+          onPressed: onPressed,
+          style: FilledButton.styleFrom(
+            elevation: 0,
+            backgroundColor: Colors.white.withValues(alpha: 0.12),
+            foregroundColor: Colors.white,
+            disabledBackgroundColor: Colors.white.withValues(alpha: 0.06),
+            disabledForegroundColor: Colors.white.withValues(alpha: 0.35),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
+            ),
+          ),
+          child: Icon(icon, size: 24),
+        ),
       ),
     );
   }
