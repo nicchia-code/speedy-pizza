@@ -1,11 +1,11 @@
 {
-  "name": "Speedy Reader",
-  "short_name": "Reader",
+  "name": "Speedy Pizza",
+  "short_name": "Pizza",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#FFF4E8",
   "theme_color": "#E4542D",
-  "description": "Fast reading web app built with Flutter.",
+  "description": "Fast reading app built with Flutter.",
   "orientation": "portrait-primary",
   "prefer_related_applications": false,
   "icons": [

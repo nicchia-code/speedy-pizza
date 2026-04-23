@@ -1,4 +1,4 @@
-# Speedy Reader
+# Speedy Pizza
 
 Flutter web MVP for fast reading.
 

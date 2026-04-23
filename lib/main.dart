@@ -16,7 +16,7 @@ const _panelBorder = Color(0xFFE7D6C8);
 const _ink = Color(0xFF211A16);
 const _muted = Color(0xFF726158);
 const _accent = Color(0xFFE4542D);
-const _accentSoft = Color(0xFFFFE1D6);
+const _accentSoft = Color(0xFFFFE4BE);
 const _track = Color(0xFFE7D9CE);
 
 const _demoText = '''
@@ -44,7 +44,7 @@ class SpeedyReaderApp extends StatelessWidget {
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Speedy Reader',
+      title: 'Speedy Pizza',
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: colorScheme,
@@ -106,6 +106,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   late final Ticker _ticker;
   late final AnimationController _readerPlayHintController;
+  late final PageController _pageController;
 
   List<String> _words = _tokenize(_demoText);
   List<String> _chapterTexts = const [_demoText];
@@ -125,13 +126,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   String get _currentWord => _hasWords ? _words[_currentWordIndex] : 'Pronto';
 
-  int get _remainingWords {
-    if (!_hasWords) {
-      return 0;
-    }
-    return _words.length - (_currentWordIndex + 1);
-  }
-
   double get _microsecondsPerWord => 60000000 / _wordsPerMinute;
 
   String get _etaLabel {
@@ -139,7 +133,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       return '--';
     }
 
-    final seconds = ((_remainingWords / _wordsPerMinute) * 60).ceil();
+    final seconds = ((_words.length / _wordsPerMinute) * 60).ceil();
     final minutes = seconds ~/ 60;
     final remainingSeconds = seconds % 60;
 
@@ -195,6 +189,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 3200),
     )..repeat();
+    _pageController = PageController(initialPage: _tabToIndex(_activeTab));
     _log('initState: reader ready');
     _restoreSession();
   }
@@ -210,6 +205,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _saveCurrentSession();
     _ticker.dispose();
     _readerPlayHintController.dispose();
+    _pageController.dispose();
     _textController.dispose();
     _draftTextController.dispose();
     _resumeController.dispose();
@@ -431,9 +427,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           ? 'Caricato ${importedBook.name} (${importedBook.formatLabel}) con $chapterCount capitoli.'
           : 'Caricato ${importedBook.name} (${importedBook.formatLabel}). ${importedWords.length} parole pronte.';
       _prepareText(message: loadedMessage, keepChapterContext: true);
-      setState(() {
-        _activeTab = _AppTab.reader;
-      });
+      _setActiveTab(_AppTab.reader, animate: false);
       _saveCurrentSession();
     } catch (error) {
       if (!mounted) {
@@ -469,9 +463,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       message: 'Demo ricaricata. La lettera centrale resta ancorata al centro.',
       keepChapterContext: true,
     );
-    setState(() {
-      _activeTab = _AppTab.reader;
-    });
+    _setActiveTab(_AppTab.reader, animate: false);
   }
 
   void _loadBookChapters(ImportedBook importedBook) {
@@ -523,9 +515,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           '${_tokenize(normalized).length} parole pronte dal testo incollato.',
       keepChapterContext: true,
     );
-    setState(() {
-      _activeTab = _AppTab.reader;
-    });
+    _setActiveTab(_AppTab.reader, animate: false);
   }
 
   void _prepareText({
@@ -630,9 +620,9 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     setState(() {
       _currentWordIndex = targetIndex.toInt();
       _isPlaying = false;
-      _activeTab = _AppTab.reader;
       _statusMessage = 'Ripreso da ${targetIndex + 1} / ${_words.length}.';
     });
+    _setActiveTab(_AppTab.reader, animate: false);
     _saveCurrentSession();
   }
 
@@ -675,9 +665,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   void _togglePlayback() {
     if (_activeTab != _AppTab.reader) {
-      setState(() {
-        _activeTab = _AppTab.reader;
-      });
+      _setActiveTab(_AppTab.reader);
     }
     if (_isPlaying) {
       _pausePlayback();
@@ -686,13 +674,53 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _startPlayback();
   }
 
-  void _navigateToTab(_AppTab tab) {
-    if (_activeTab == tab) {
+  int _tabToIndex(_AppTab tab) => tab.index;
+
+  _AppTab _indexToTab(int index) =>
+      _AppTab.values[index.clamp(0, _AppTab.values.length - 1)];
+
+  void _setActiveTab(_AppTab tab, {bool animate = true}) {
+    if (_activeTab != tab) {
+      setState(() {
+        _activeTab = tab;
+      });
+    }
+    _syncPageToTab(tab, animate: animate);
+  }
+
+  void _syncPageToTab(_AppTab tab, {bool animate = true}) {
+    if (!_pageController.hasClients) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _syncPageToTab(tab, animate: false);
+      });
       return;
     }
-    setState(() {
-      _activeTab = tab;
-    });
+
+    final targetPage = _tabToIndex(tab);
+    final currentPage =
+        _pageController.page ?? _pageController.initialPage.toDouble();
+
+    if (currentPage.round() == targetPage) {
+      return;
+    }
+
+    if (animate) {
+      _pageController.animateToPage(
+        targetPage,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      );
+      return;
+    }
+
+    _pageController.jumpToPage(targetPage);
+  }
+
+  void _navigateToTab(_AppTab tab) {
+    _setActiveTab(tab);
   }
 
   void _restartPlayback() {
@@ -714,15 +742,21 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       _ticker.stop();
     }
 
+    if (shouldResume) {
+      setState(() {
+        _wordsPerMinute = value;
+        _statusMessage = 'Velocita impostata a ${value.round()} WPM.';
+      });
+      _playbackStartIndex = _currentWordIndex;
+      _ticker.start();
+      return;
+    }
+
     setState(() {
       _wordsPerMinute = value;
       _isPlaying = false;
       _statusMessage = 'Velocita impostata a ${value.round()} WPM.';
     });
-
-    if (shouldResume) {
-      _startPlayback();
-    }
   }
 
   void _adjustSpeedBy(double delta) {
@@ -925,9 +959,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     onTap: () {
                       Navigator.of(sheetContext).pop();
                       _selectChapter(index);
-                      setState(() {
-                        _activeTab = _AppTab.reader;
-                      });
+                      _setActiveTab(_AppTab.reader);
                     },
                   ),
                 );
@@ -960,116 +992,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildReaderStatusCard(BuildContext context, {required bool compact}) {
-    final textTheme = Theme.of(context).textTheme;
-
-    return Container(
-      padding: EdgeInsets.fromLTRB(
-        compact ? 16 : 18,
-        16,
-        compact ? 16 : 18,
-        16,
-      ),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFFFF6F0), Color(0xFFFFE8DE)],
-        ),
-        borderRadius: BorderRadius.circular(compact ? 24 : 28),
-        border: Border.all(color: const Color(0xFFF1D3C2)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x14000000),
-            blurRadius: 24,
-            offset: Offset(0, 14),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(
-                'Controlli',
-                style: textTheme.titleMedium?.copyWith(
-                  color: _ink,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const Spacer(),
-              _buildReaderStatePill(
-                label: '${_wordsPerMinute.round()} WPM',
-                icon: Icons.speed_rounded,
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _isPlaying
-                ? 'La barra sotto e in modalita player. Da li puoi rallentare, mettere in pausa o accelerare.'
-                : 'Il play vive nella barra sotto. Apri Reader, lascia morphare il bottone centrale e premi per partire.',
-            style: textTheme.bodyMedium?.copyWith(
-              color: _muted,
-              height: 1.4,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _buildReaderStatePill(
-                label: _isPlaying ? 'Attivo' : 'Pronto',
-                icon: _isPlaying
-                    ? Icons.graphic_eq_rounded
-                    : Icons.play_circle_outline_rounded,
-              ),
-              _buildReaderStatePill(
-                label: 'Ripresa $_resumePointLabel',
-                icon: Icons.bookmark_added_rounded,
-              ),
-              _buildReaderStatePill(
-                label: 'Step 20 WPM',
-                icon: Icons.tune_rounded,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildReaderStatePill({
-    required String label,
-    required IconData icon,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.78),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFFF2D6C8)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: _accent),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: const TextStyle(
-              color: _ink,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1087,24 +1009,24 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final isCompact = constraints.maxWidth < 760;
-              final page = AnimatedSwitcher(
-                duration: const Duration(milliseconds: 280),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                child: switch (_activeTab) {
-                  _AppTab.home => _buildHomeTab(context, compact: isCompact),
-                  _AppTab.reader => _buildReaderTab(
-                    context,
-                    compact: isCompact,
-                  ),
-                  _AppTab.settings => _buildSettingsTab(
-                    context,
-                    compact: isCompact,
-                  ),
+              return PageView(
+                controller: _pageController,
+                physics: const BouncingScrollPhysics(),
+                onPageChanged: (index) {
+                  final tab = _indexToTab(index);
+                  if (tab == _activeTab) {
+                    return;
+                  }
+                  setState(() {
+                    _activeTab = tab;
+                  });
                 },
+                children: [
+                  _buildHomeTab(context, compact: isCompact),
+                  _buildReaderTab(context, compact: isCompact),
+                  _buildSettingsTab(context, compact: isCompact),
+                ],
               );
-
-              return page;
             },
           ),
         ),
@@ -1177,9 +1099,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           ),
         ),
         const SizedBox(width: 10),
-        Expanded(
-          child: _buildIdleReaderTriggerButton(),
-        ),
+        Expanded(child: _buildIdleReaderTriggerButton()),
         const SizedBox(width: 10),
         Expanded(
           child: _buildIdleNavButton(
@@ -1199,13 +1119,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
         builder: (context, child) {
           final showHint = _showReaderPlayTrigger;
           final cycle = _readerPlayHintController.value;
-          final shineVisible = showHint && cycle >= 0.16 && cycle <= 0.54;
+          final pulsePhase = math.sin(cycle * math.pi * 2);
+          final pulse = showHint ? 1 + (0.034 * math.max(0, pulsePhase)) : 1.0;
+          final shineVisible = showHint && (cycle >= 0.08 && cycle <= 0.78);
           final shineProgress = shineVisible
-              ? Curves.easeInOut.transform((cycle - 0.16) / 0.38)
+              ? Curves.easeInOutCubic.transform((cycle - 0.08) / 0.7)
               : 0.0;
-          final shineX = -1.35 + (2.7 * shineProgress);
-          final pulse =
-              showHint ? 1 + (0.028 * math.max(0, math.sin(cycle * math.pi))) : 1.0;
+          final shineX = -1.8 + (3.6 * shineProgress);
           final borderRadius = BorderRadius.circular(showHint ? 22 : 18);
 
           return Transform.scale(
@@ -1215,26 +1135,23 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
               curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
                 gradient: showHint
-                    ? LinearGradient(
+                    ? const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [
-                          Colors.white.withValues(alpha: 0.26),
-                          Colors.white.withValues(alpha: 0.1),
-                        ],
+                        colors: [Color(0xFFFFA634), Color(0xFFFF7B0F)],
                       )
                     : null,
                 color: showHint ? null : Colors.white.withValues(alpha: 0.06),
                 borderRadius: borderRadius,
                 border: Border.all(
-                  color: Colors.white.withValues(alpha: showHint ? 0.22 : 0.12),
+                  color: Colors.white.withValues(alpha: showHint ? 0.28 : 0.12),
                 ),
                 boxShadow: showHint
                     ? const [
                         BoxShadow(
-                          color: Color(0x1AFFFFFF),
-                          blurRadius: 22,
-                          offset: Offset(0, 10),
+                          color: Color(0x3AE4542D),
+                          blurRadius: 24,
+                          offset: Offset(0, 12),
                         ),
                       ]
                     : null,
@@ -1256,7 +1173,20 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
                                 colors: [
-                                  Colors.white.withValues(alpha: 0.12),
+                                  Colors.white.withValues(alpha: 0.28),
+                                  Colors.white.withValues(alpha: 0),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (showHint)
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: RadialGradient(
+                                center: const Alignment(0, -0.45),
+                                radius: 1.15,
+                                colors: [
+                                  Colors.white.withValues(alpha: 0.14),
                                   Colors.white.withValues(alpha: 0),
                                 ],
                               ),
@@ -1269,19 +1199,23 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                             child: Align(
                               alignment: Alignment(shineX, 0),
                               child: Transform.rotate(
-                                angle: -0.28,
+                                angle: -0.34,
                                 child: Container(
-                                  width: 34,
+                                  width: 86,
+                                  height: 150,
                                   decoration: BoxDecoration(
                                     gradient: LinearGradient(
+                                      stops: const [0, 0.46, 0.54, 1],
                                       begin: Alignment.centerLeft,
                                       end: Alignment.centerRight,
                                       colors: [
                                         Colors.white.withValues(alpha: 0),
-                                        Colors.white.withValues(alpha: 0.34),
+                                        Colors.white.withValues(alpha: 0.1),
+                                        Colors.white.withValues(alpha: 0.48),
                                         Colors.white.withValues(alpha: 0),
                                       ],
                                     ),
+                                    borderRadius: BorderRadius.circular(999),
                                   ),
                                 ),
                               ),
@@ -1290,7 +1224,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                         Center(
                           child: Icon(
                             Icons.play_arrow_rounded,
-                            size: showHint ? 28 : 24,
+                            size: showHint ? 30 : 24,
                             color: Colors.white,
                           ),
                         ),
@@ -1407,14 +1341,14 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return KeyedSubtree(
       key: const ValueKey('home-tab'),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 108),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 880),
             child: Column(
               children: [
                 Expanded(
-                  flex: 5,
+                  flex: compact ? 5 : 4,
                   child: Container(
                     width: double.infinity,
                     padding: EdgeInsets.all(compact ? 22 : 28),
@@ -1422,7 +1356,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                       gradient: const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xFFFFDCCF), Color(0xFFF6A27C)],
+                        colors: [Color(0xFFFFE4BC), Color(0xFFF5A33C)],
                       ),
                       borderRadius: BorderRadius.circular(compact ? 28 : 34),
                       boxShadow: const [
@@ -1456,11 +1390,11 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                         ),
                         const Spacer(),
                         Text(
-                          'Speedy Reader',
+                          'Speedy Pizza',
                           style:
                               (compact
-                                  ? textTheme.headlineMedium
-                                  : textTheme.displaySmall)
+                                      ? textTheme.headlineMedium
+                                      : textTheme.displaySmall)
                                   ?.copyWith(
                                     color: _ink,
                                     fontWeight: FontWeight.w900,
@@ -1471,8 +1405,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                         const SizedBox(height: 12),
                         Text(
                           _hasImportedSource
-                              ? 'Riprendi $_activeSourceLabel dal capitolo $_chapterProgressLabel, oppure aggiungi un nuovo contenuto.'
-                              : 'Apri il reader oppure carica un contenuto. L app resta focalizzata su una sola schermata alla volta.',
+                              ? 'Ultima sessione pronta su $_activeSourceLabel. Apri la tab play oppure aggiungi un nuovo contenuto.'
+                              : 'Importa un contenuto e scorri tra Home, Play e Impostazioni senza uscire dalla schermata.',
                           style: textTheme.bodyLarge?.copyWith(
                             color: _ink.withValues(alpha: 0.72),
                             height: 1.4,
@@ -1482,55 +1416,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                if (compact) ...[
-                  FilledButton.icon(
-                    onPressed: () => _navigateToTab(_AppTab.reader),
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(56),
-                      backgroundColor: _accent,
-                      foregroundColor: Colors.white,
-                    ),
-                    icon: const Icon(Icons.play_circle_fill_rounded),
-                    label: const Text('Apri reader'),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _openAddContentSheet,
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(56),
-                    ),
-                    icon: const Icon(Icons.add_circle_outline_rounded),
-                    label: const Text('Aggiungi contenuto'),
-                  ),
-                ] else
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: () => _navigateToTab(_AppTab.reader),
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size.fromHeight(56),
-                            backgroundColor: _accent,
-                            foregroundColor: Colors.white,
-                          ),
-                          icon: const Icon(Icons.play_circle_fill_rounded),
-                          label: const Text('Apri reader'),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _openAddContentSheet,
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size.fromHeight(56),
-                          ),
-                          icon: const Icon(Icons.add_circle_outline_rounded),
-                          label: const Text('Aggiungi contenuto'),
-                        ),
-                      ),
-                    ],
-                  ),
                 const SizedBox(height: 14),
                 Expanded(
                   flex: 3,
@@ -1579,6 +1464,23 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     ),
                   ),
                 ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _openAddContentSheet,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(58),
+                      backgroundColor: _accent,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                    ),
+                    icon: const Icon(Icons.add_circle_outline_rounded),
+                    label: const Text('Aggiungi contenuto'),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1592,7 +1494,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return KeyedSubtree(
       key: const ValueKey('reader-tab'),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 108),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 920),
@@ -1705,8 +1607,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                _buildReaderStatusCard(context, compact: compact),
               ],
             ),
           ),
@@ -1721,7 +1621,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return KeyedSubtree(
       key: const ValueKey('settings-tab'),
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 108),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 920),
