@@ -16,6 +16,7 @@ const _panelBorder = Color(0xFFE7D6C8);
 const _ink = Color(0xFF211A16);
 const _muted = Color(0xFF726158);
 const _accent = Color(0xFFE4542D);
+const _accentDeep = Color(0xFFB63A1D);
 const _accentSoft = Color(0xFFFFE4BE);
 const _track = Color(0xFFE7D9CE);
 
@@ -1119,13 +1120,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
         builder: (context, child) {
           final showHint = _showReaderPlayTrigger;
           final cycle = _readerPlayHintController.value;
-          final pulsePhase = math.sin(cycle * math.pi * 2);
-          final pulse = showHint ? 1 + (0.034 * math.max(0, pulsePhase)) : 1.0;
-          final shineVisible = showHint && (cycle >= 0.08 && cycle <= 0.78);
-          final shineProgress = shineVisible
-              ? Curves.easeInOutCubic.transform((cycle - 0.08) / 0.7)
-              : 0.0;
-          final shineX = -1.8 + (3.6 * shineProgress);
+          final pulsePhase = (math.sin(cycle * math.pi * 2) + 1) / 2;
+          final pulse = showHint ? 1 + (0.07 * pulsePhase) : 1.0;
           final borderRadius = BorderRadius.circular(showHint ? 22 : 18);
 
           return Transform.scale(
@@ -1138,7 +1134,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     ? const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xFFFFA634), Color(0xFFFF7B0F)],
+                        colors: [_accent, _accentDeep],
                       )
                     : null,
                 color: showHint ? null : Colors.white.withValues(alpha: 0.06),
@@ -1150,8 +1146,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     ? const [
                         BoxShadow(
                           color: Color(0x3AE4542D),
-                          blurRadius: 24,
-                          offset: Offset(0, 12),
+                          blurRadius: 28,
+                          offset: Offset(0, 14),
                         ),
                       ]
                     : null,
@@ -1161,74 +1157,11 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                 child: InkWell(
                   borderRadius: borderRadius,
                   onTap: _handleIdleReaderTrigger,
-                  child: ClipRRect(
-                    borderRadius: borderRadius,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        if (showHint)
-                          DecoratedBox(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [
-                                  Colors.white.withValues(alpha: 0.28),
-                                  Colors.white.withValues(alpha: 0),
-                                ],
-                              ),
-                            ),
-                          ),
-                        if (showHint)
-                          DecoratedBox(
-                            decoration: BoxDecoration(
-                              gradient: RadialGradient(
-                                center: const Alignment(0, -0.45),
-                                radius: 1.15,
-                                colors: [
-                                  Colors.white.withValues(alpha: 0.14),
-                                  Colors.white.withValues(alpha: 0),
-                                ],
-                              ),
-                            ),
-                          ),
-                        if (showHint)
-                          AnimatedOpacity(
-                            opacity: shineVisible ? 1 : 0,
-                            duration: const Duration(milliseconds: 180),
-                            child: Align(
-                              alignment: Alignment(shineX, 0),
-                              child: Transform.rotate(
-                                angle: -0.34,
-                                child: Container(
-                                  width: 86,
-                                  height: 150,
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      stops: const [0, 0.46, 0.54, 1],
-                                      begin: Alignment.centerLeft,
-                                      end: Alignment.centerRight,
-                                      colors: [
-                                        Colors.white.withValues(alpha: 0),
-                                        Colors.white.withValues(alpha: 0.1),
-                                        Colors.white.withValues(alpha: 0.48),
-                                        Colors.white.withValues(alpha: 0),
-                                      ],
-                                    ),
-                                    borderRadius: BorderRadius.circular(999),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        Center(
-                          child: Icon(
-                            Icons.play_arrow_rounded,
-                            size: showHint ? 30 : 24,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
+                  child: Center(
+                    child: Icon(
+                      Icons.play_arrow_rounded,
+                      size: showHint ? 31 : 24,
+                      color: Colors.white,
                     ),
                   ),
                 ),
@@ -1251,12 +1184,16 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           padding: EdgeInsets.zero,
           elevation: 0,
           backgroundColor: isSelected
-              ? Colors.white.withValues(alpha: 0.18)
+              ? const Color(0xFFFFF4EA)
               : Colors.white.withValues(alpha: 0.06),
-          foregroundColor: Colors.white,
+          foregroundColor: isSelected ? _ink : Colors.white,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+            side: BorderSide(
+              color: isSelected
+                  ? const Color(0xFFFFD9BE)
+                  : Colors.white.withValues(alpha: 0.12),
+            ),
           ),
         ),
         child: Icon(icon, size: isSelected ? 24 : 22),
@@ -1348,15 +1285,15 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
             child: Column(
               children: [
                 Expanded(
-                  flex: compact ? 5 : 4,
+                  flex: compact ? 3 : 2,
                   child: Container(
                     width: double.infinity,
-                    padding: EdgeInsets.all(compact ? 22 : 28),
+                    padding: EdgeInsets.all(compact ? 18 : 22),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xFFFFE4BC), Color(0xFFF5A33C)],
+                        colors: [_accent, _accentDeep],
                       ),
                       borderRadius: BorderRadius.circular(compact ? 28 : 34),
                       boxShadow: const [
@@ -1370,24 +1307,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.5),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            'SCHERMATA INIZIALE',
-                            style: textTheme.labelLarge?.copyWith(
-                              color: _accent,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 1.0,
-                            ),
-                          ),
-                        ),
                         const Spacer(),
                         Text(
                           'Speedy Pizza',
@@ -1396,69 +1315,85 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                                       ? textTheme.headlineMedium
                                       : textTheme.displaySmall)
                                   ?.copyWith(
-                                    color: _ink,
+                                    color: Colors.white,
                                     fontWeight: FontWeight.w900,
                                     letterSpacing: compact ? -1.2 : -1.8,
                                     height: 0.94,
                                   ),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Il reader piu veloce del west',
+                          style: textTheme.titleMedium?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.88),
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.4,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
                         Text(
                           _hasImportedSource
                               ? 'Ultima sessione pronta su $_activeSourceLabel. Apri la tab play oppure aggiungi un nuovo contenuto.'
                               : 'Importa un contenuto e scorri tra Home, Play e Impostazioni senza uscire dalla schermata.',
                           style: textTheme.bodyLarge?.copyWith(
-                            color: _ink.withValues(alpha: 0.72),
+                            color: Colors.white.withValues(alpha: 0.82),
                             height: 1.4,
                           ),
                         ),
+                        const Spacer(),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 14),
                 Expanded(
-                  flex: 3,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(28),
-                    onTap: () => _navigateToTab(_AppTab.reader),
-                    child: DecoratedBox(
-                      decoration: _panelDecoration(radius: 28),
-                      child: Padding(
-                        padding: EdgeInsets.all(compact ? 20 : 24),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Ultima sessione',
-                              style: textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: -0.6,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              _activeSourceLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: -0.8,
-                              ),
-                            ),
-                            const Spacer(),
-                            Wrap(
-                              spacing: 10,
-                              runSpacing: 10,
-                              children: [
-                                _InlineStatPill(
-                                  label: 'Capitolo',
-                                  value: _chapterProgressLabel,
+                  flex: 5,
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(28),
+                      onTap: () => _navigateToTab(_AppTab.reader),
+                      child: DecoratedBox(
+                        decoration: _panelDecoration(radius: 28),
+                        child: Padding(
+                          padding: EdgeInsets.all(compact ? 20 : 24),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Ultima sessione',
+                                style: textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.6,
                                 ),
-                                _InlineStatPill(label: 'ETA', value: _etaLabel),
-                              ],
-                            ),
-                          ],
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                _activeSourceLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: textTheme.headlineSmall?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.8,
+                                ),
+                              ),
+                              const Spacer(),
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 10,
+                                children: [
+                                  _InlineStatPill(
+                                    label: 'Capitolo',
+                                    value: _chapterProgressLabel,
+                                  ),
+                                  _InlineStatPill(
+                                    label: 'ETA',
+                                    value: _etaLabel,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -1579,28 +1514,65 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 14),
                 InkWell(
-                  borderRadius: BorderRadius.circular(24),
+                  borderRadius: BorderRadius.circular(30),
                   onTap: _chapterTexts.length > 1 ? _openChapterSheet : null,
                   child: DecoratedBox(
-                    decoration: _panelDecoration(radius: 24),
+                    decoration: _panelDecoration(radius: 30),
                     child: Padding(
-                      padding: EdgeInsets.all(compact ? 16 : 18),
-                      child: Row(
+                      padding: EdgeInsets.fromLTRB(
+                        compact ? 18 : 22,
+                        compact ? 18 : 22,
+                        compact ? 18 : 22,
+                        compact ? 16 : 18,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(
-                            child: _MetricCard(
-                              label: 'Capitolo',
-                              value: _chapterProgressLabel,
-                              compact: true,
-                            ),
+                          Row(
+                            children: [
+                              Text(
+                                'Capitolo attivo',
+                                style: textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.5,
+                                ),
+                              ),
+                              const Spacer(),
+                              if (_chapterTexts.length > 1)
+                                Icon(
+                                  Icons.menu_book_rounded,
+                                  size: 20,
+                                  color: _accent,
+                                ),
+                            ],
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _MetricCard(
-                              label: 'ETA capitolo',
-                              value: _etaLabel,
-                              compact: true,
-                            ),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _MetricCard(
+                                  label: 'Capitolo',
+                                  value: _chapterProgressLabel,
+                                  compact: false,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _MetricCard(
+                                  label: 'ETA',
+                                  value: _etaLabel,
+                                  compact: false,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _MetricCard(
+                                  label: 'WPM',
+                                  value: '${_wordsPerMinute.round()}',
+                                  compact: false,
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
