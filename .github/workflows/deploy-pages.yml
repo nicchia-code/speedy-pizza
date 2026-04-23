@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
 
 permissions:
@@ -21,22 +22,45 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Fetch site branches
+        run: git fetch origin main dev
 
-      - name: Build web app
-        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+      - name: Prepare worktrees
+        run: |
+          git worktree add --detach ../site-main origin/main
+          git worktree add --detach ../site-dev origin/dev
+
+      - name: Build production web app
+        working-directory: ../site-main
+        run: |
+          flutter pub get
+          flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+
+      - name: Build development web app
+        working-directory: ../site-dev
+        run: |
+          flutter pub get
+          flutter build web --release --base-href "/${{ github.event.repository.name }}/dev/"
+
+      - name: Compose Pages site
+        run: |
+          rm -rf site
+          mkdir -p site/dev
+          cp -R ../site-main/build/web/. site/
+          cp -R ../site-dev/build/web/. site/dev/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: build/web
+          path: site
 
   deploy:
     environment:
