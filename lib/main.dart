@@ -93,8 +93,7 @@ class ReaderPage extends StatefulWidget {
   State<ReaderPage> createState() => _ReaderPageState();
 }
 
-class _ReaderPageState extends State<ReaderPage>
-    with SingleTickerProviderStateMixin {
+class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   final TextEditingController _textController = TextEditingController(
     text: _demoText,
   );
@@ -106,6 +105,7 @@ class _ReaderPageState extends State<ReaderPage>
   final ReadingSessionStore _sessionStore = createReadingSessionStore();
 
   late final Ticker _ticker;
+  late final AnimationController _readerPlayHintController;
 
   List<String> _words = _tokenize(_demoText);
   List<String> _chapterTexts = const [_demoText];
@@ -153,6 +153,8 @@ class _ReaderPageState extends State<ReaderPage>
   String get _activeSourceLabel => _prettifySourceName(_loadedFileName);
 
   bool get _hasImportedSource => _loadedFileName != null;
+  bool get _showReaderPlayTrigger =>
+      _activeTab == _AppTab.reader && !_isPlaying;
 
   String get _resumePointLabel => _hasWords ? '${_currentWordIndex + 1}' : '--';
 
@@ -189,6 +191,10 @@ class _ReaderPageState extends State<ReaderPage>
   void initState() {
     super.initState();
     _ticker = createTicker(_handleTick);
+    _readerPlayHintController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    )..repeat();
     _log('initState: reader ready');
     _restoreSession();
   }
@@ -203,6 +209,7 @@ class _ReaderPageState extends State<ReaderPage>
   void dispose() {
     _saveCurrentSession();
     _ticker.dispose();
+    _readerPlayHintController.dispose();
     _textController.dispose();
     _draftTextController.dispose();
     _resumeController.dispose();
@@ -723,6 +730,14 @@ class _ReaderPageState extends State<ReaderPage>
     _setSpeed(nextValue);
   }
 
+  void _handleIdleReaderTrigger() {
+    if (_activeTab == _AppTab.reader) {
+      _togglePlayback();
+      return;
+    }
+    _navigateToTab(_AppTab.reader);
+  }
+
   Future<void> _openAddContentSheet() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -945,7 +960,7 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
-  Widget _buildPlayerCard(BuildContext context, {required bool compact}) {
+  Widget _buildReaderStatusCard(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
 
     return Container(
@@ -959,12 +974,13 @@ class _ReaderPageState extends State<ReaderPage>
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
+          colors: [Color(0xFFFFF6F0), Color(0xFFFFE8DE)],
         ),
         borderRadius: BorderRadius.circular(compact ? 24 : 28),
+        border: Border.all(color: const Color(0xFFF1D3C2)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x22000000),
+            color: Color(0x14000000),
             blurRadius: 24,
             offset: Offset(0, 14),
           ),
@@ -976,87 +992,48 @@ class _ReaderPageState extends State<ReaderPage>
           Row(
             children: [
               Text(
-                'Player',
+                'Controlli',
                 style: textTheme.titleMedium?.copyWith(
-                  color: Colors.white,
+                  color: _ink,
                   fontWeight: FontWeight.w900,
                 ),
               ),
               const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.14),
-                  ),
-                ),
-                child: Text(
-                  '${_wordsPerMinute.round()} WPM',
-                  style: textTheme.labelLarge?.copyWith(
-                    color: const Color(0xFFFFD5C2),
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
+              _buildReaderStatePill(
+                label: '${_wordsPerMinute.round()} WPM',
+                icon: Icons.speed_rounded,
               ),
             ],
           ),
           const SizedBox(height: 8),
-          Row(
-            children: [
-              Text(
-                _isPlaying ? 'Riproduzione attiva' : 'In pausa',
-                style: textTheme.bodySmall?.copyWith(
-                  color: Colors.white.withValues(alpha: 0.74),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                'Tap su impostazioni per il controllo fine',
-                style: textTheme.bodySmall?.copyWith(
-                  color: Colors.white.withValues(alpha: 0.74),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
+          Text(
+            _isPlaying
+                ? 'La barra sotto e in modalita player. Da li puoi rallentare, mettere in pausa o accelerare.'
+                : 'Il play vive nella barra sotto. Apri Reader, lascia morphare il bottone centrale e premi per partire.',
+            style: textTheme.bodyMedium?.copyWith(
+              color: _muted,
+              height: 1.4,
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 14),
-          Row(
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
             children: [
-              _buildPlayerActionButton(
-                label: '-20',
-                onPressed: _hasWords ? () => _adjustSpeedBy(-20) : null,
+              _buildReaderStatePill(
+                label: _isPlaying ? 'Attivo' : 'Pronto',
+                icon: _isPlaying
+                    ? Icons.graphic_eq_rounded
+                    : Icons.play_circle_outline_rounded,
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _togglePlayback,
-                  icon: Icon(
-                    _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                  ),
-                  label: Text(_isPlaying ? 'Pause' : 'Play'),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(54),
-                    backgroundColor: const Color(0xFFFFE1D6),
-                    foregroundColor: _ink,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    textStyle: textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
+              _buildReaderStatePill(
+                label: 'Ripresa $_resumePointLabel',
+                icon: Icons.bookmark_added_rounded,
               ),
-              const SizedBox(width: 10),
-              _buildPlayerActionButton(
-                label: '+20',
-                onPressed: _hasWords ? () => _adjustSpeedBy(20) : null,
+              _buildReaderStatePill(
+                label: 'Step 20 WPM',
+                icon: Icons.tune_rounded,
               ),
             ],
           ),
@@ -1065,28 +1042,30 @@ class _ReaderPageState extends State<ReaderPage>
     );
   }
 
-  Widget _buildPlayerActionButton({
+  Widget _buildReaderStatePill({
     required String label,
-    required VoidCallback? onPressed,
+    required IconData icon,
   }) {
-    return SizedBox(
-      width: 64,
-      height: 52,
-      child: OutlinedButton(
-        onPressed: onPressed,
-        style: OutlinedButton.styleFrom(
-          padding: EdgeInsets.zero,
-          backgroundColor: Colors.white.withValues(alpha: 0.08),
-          foregroundColor: Colors.white,
-          side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFF2D6C8)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: _accent),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              color: _ink,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-        ),
-        child: Text(
-          label,
-          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-        ),
+        ],
       ),
     );
   }
@@ -1145,18 +1124,19 @@ class _ReaderPageState extends State<ReaderPage>
           curve: Curves.easeOutCubic,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
+            gradient: const LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: isPlayerMode
-                  ? const [Color(0xFFE4542D), Color(0xFF8E2916)]
-                  : const [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
+              colors: [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
             ),
             borderRadius: BorderRadius.circular(isPlayerMode ? 28 : 26),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: isPlayerMode ? 0.16 : 0.1),
+            ),
             boxShadow: [
               BoxShadow(
                 color: isPlayerMode
-                    ? const Color(0x30E4542D)
+                    ? const Color(0x28000000)
                     : const Color(0x22000000),
                 blurRadius: isPlayerMode ? 28 : 24,
                 offset: const Offset(0, 14),
@@ -1198,10 +1178,7 @@ class _ReaderPageState extends State<ReaderPage>
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: _buildIdleNavButton(
-            tab: _AppTab.reader,
-            icon: Icons.play_circle_fill_rounded,
-          ),
+          child: _buildIdleReaderTriggerButton(),
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -1211,6 +1188,121 @@ class _ReaderPageState extends State<ReaderPage>
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildIdleReaderTriggerButton() {
+    return SizedBox(
+      height: 54,
+      child: AnimatedBuilder(
+        animation: _readerPlayHintController,
+        builder: (context, child) {
+          final showHint = _showReaderPlayTrigger;
+          final cycle = _readerPlayHintController.value;
+          final shineVisible = showHint && cycle >= 0.16 && cycle <= 0.54;
+          final shineProgress = shineVisible
+              ? Curves.easeInOut.transform((cycle - 0.16) / 0.38)
+              : 0.0;
+          final shineX = -1.35 + (2.7 * shineProgress);
+          final pulse =
+              showHint ? 1 + (0.028 * math.max(0, math.sin(cycle * math.pi))) : 1.0;
+          final borderRadius = BorderRadius.circular(showHint ? 22 : 18);
+
+          return Transform.scale(
+            scale: pulse,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                gradient: showHint
+                    ? LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.white.withValues(alpha: 0.26),
+                          Colors.white.withValues(alpha: 0.1),
+                        ],
+                      )
+                    : null,
+                color: showHint ? null : Colors.white.withValues(alpha: 0.06),
+                borderRadius: borderRadius,
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: showHint ? 0.22 : 0.12),
+                ),
+                boxShadow: showHint
+                    ? const [
+                        BoxShadow(
+                          color: Color(0x1AFFFFFF),
+                          blurRadius: 22,
+                          offset: Offset(0, 10),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: borderRadius,
+                  onTap: _handleIdleReaderTrigger,
+                  child: ClipRRect(
+                    borderRadius: borderRadius,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (showHint)
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.white.withValues(alpha: 0.12),
+                                  Colors.white.withValues(alpha: 0),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (showHint)
+                          AnimatedOpacity(
+                            opacity: shineVisible ? 1 : 0,
+                            duration: const Duration(milliseconds: 180),
+                            child: Align(
+                              alignment: Alignment(shineX, 0),
+                              child: Transform.rotate(
+                                angle: -0.28,
+                                child: Container(
+                                  width: 34,
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.centerLeft,
+                                      end: Alignment.centerRight,
+                                      colors: [
+                                        Colors.white.withValues(alpha: 0),
+                                        Colors.white.withValues(alpha: 0.34),
+                                        Colors.white.withValues(alpha: 0),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        Center(
+                          child: Icon(
+                            Icons.play_arrow_rounded,
+                            size: showHint ? 28 : 24,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -1258,7 +1350,7 @@ class _ReaderPageState extends State<ReaderPage>
               style: FilledButton.styleFrom(
                 elevation: 0,
                 backgroundColor: Colors.white,
-                foregroundColor: _accent,
+                foregroundColor: _ink,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(20),
                 ),
@@ -1330,7 +1422,7 @@ class _ReaderPageState extends State<ReaderPage>
                       gradient: const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xFF2D1A15), Color(0xFF6B3522)],
+                        colors: [Color(0xFFFFDCCF), Color(0xFFF6A27C)],
                       ),
                       borderRadius: BorderRadius.circular(compact ? 28 : 34),
                       boxShadow: const [
@@ -1350,13 +1442,13 @@ class _ReaderPageState extends State<ReaderPage>
                             vertical: 8,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.1),
+                            color: Colors.white.withValues(alpha: 0.5),
                             borderRadius: BorderRadius.circular(999),
                           ),
                           child: Text(
                             'SCHERMATA INIZIALE',
                             style: textTheme.labelLarge?.copyWith(
-                              color: const Color(0xFFFFD5C2),
+                              color: _accent,
                               fontWeight: FontWeight.w900,
                               letterSpacing: 1.0,
                             ),
@@ -1367,10 +1459,10 @@ class _ReaderPageState extends State<ReaderPage>
                           'Speedy Reader',
                           style:
                               (compact
-                                      ? textTheme.headlineMedium
-                                      : textTheme.displaySmall)
+                                  ? textTheme.headlineMedium
+                                  : textTheme.displaySmall)
                                   ?.copyWith(
-                                    color: Colors.white,
+                                    color: _ink,
                                     fontWeight: FontWeight.w900,
                                     letterSpacing: compact ? -1.2 : -1.8,
                                     height: 0.94,
@@ -1382,7 +1474,7 @@ class _ReaderPageState extends State<ReaderPage>
                               ? 'Riprendi $_activeSourceLabel dal capitolo $_chapterProgressLabel, oppure aggiungi un nuovo contenuto.'
                               : 'Apri il reader oppure carica un contenuto. L app resta focalizzata su una sola schermata alla volta.',
                           style: textTheme.bodyLarge?.copyWith(
-                            color: Colors.white.withValues(alpha: 0.76),
+                            color: _ink.withValues(alpha: 0.72),
                             height: 1.4,
                           ),
                         ),
@@ -1614,7 +1706,7 @@ class _ReaderPageState extends State<ReaderPage>
                   ),
                 ),
                 const SizedBox(height: 14),
-                _buildPlayerCard(context, compact: compact),
+                _buildReaderStatusCard(context, compact: compact),
               ],
             ),
           ),
