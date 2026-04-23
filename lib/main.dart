@@ -19,6 +19,9 @@ const _accent = Color(0xFFE4542D);
 const _accentDeep = Color(0xFFB63A1D);
 const _accentSoft = Color(0xFFFFE4BE);
 const _track = Color(0xFFE7D9CE);
+const _brandInk = Color(0xFF57524E);
+const _brandInkSoft = Color(0xFF6E6863);
+const _surfaceWarm = Color(0xFFF7EFE8);
 
 const _demoText = '''
 Leggere veloce non vuol dire correre a caso.
@@ -99,9 +102,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     text: _demoText,
   );
   final TextEditingController _draftTextController = TextEditingController();
-  final TextEditingController _resumeController = TextEditingController(
-    text: '1',
-  );
   final TextSourcePicker _textSourcePicker = createTextSourcePicker();
   final ReadingSessionStore _sessionStore = createReadingSessionStore();
 
@@ -135,14 +135,11 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
 
     final seconds = ((_words.length / _wordsPerMinute) * 60).ceil();
-    final minutes = seconds ~/ 60;
-    final remainingSeconds = seconds % 60;
-
-    if (minutes == 0) {
-      return '${remainingSeconds}s';
+    if (seconds < 60) {
+      return '${seconds}s';
     }
 
-    return '${minutes}m ${remainingSeconds.toString().padLeft(2, '0')}s';
+    return '${(seconds / 60).round()}m';
   }
 
   String get _activeSourceLabel => _prettifySourceName(_loadedFileName);
@@ -150,8 +147,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   bool get _hasImportedSource => _loadedFileName != null;
   bool get _showReaderPlayTrigger =>
       _activeTab == _AppTab.reader && !_isPlaying;
-
-  String get _resumePointLabel => _hasWords ? '${_currentWordIndex + 1}' : '--';
 
   String get _chapterProgressLabel =>
       '${_activeChapterIndex + 1} / ${_chapterTexts.length}';
@@ -209,7 +204,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _pageController.dispose();
     _textController.dispose();
     _draftTextController.dispose();
-    _resumeController.dispose();
     super.dispose();
   }
 
@@ -255,7 +249,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _draftTextController.clear();
     _loadedFileName = session.bookName ?? 'Ultimo libro';
     _loadedFormatLabel = session.formatLabel;
-    _resumeController.text = (restoredIndex + 1).toString();
     _log(
       'restoreSession: '
       'book=${_loadedFileName}, format=${_loadedFormatLabel ?? 'unknown'}, '
@@ -368,7 +361,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       _currentWordIndex = nextIndex;
       if (reachedEnd) {
         _isPlaying = false;
-        _statusMessage = 'Fine del testo. Premi Restart per ricominciare.';
+        _statusMessage = 'Fine del testo. Tocca Play per ricominciare.';
       }
     });
 
@@ -459,7 +452,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _activeChapterIndex = 0;
     _loadedFileName = null;
     _loadedFormatLabel = null;
-    _resumeController.text = '1';
     _prepareText(
       message: 'Demo ricaricata. La lettera centrale resta ancorata al centro.',
       keepChapterContext: true,
@@ -543,7 +535,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     setState(() {
       _words = words;
       _currentWordIndex = startIndex;
-      _resumeController.text = words.isNotEmpty ? '${startIndex + 1}' : '';
       _isPlaying = false;
       _statusMessage =
           message ??
@@ -577,54 +568,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       initialIndex: 0,
       keepChapterContext: true,
     );
-  }
-
-  void _setResumeFromCurrent() {
-    if (!_hasWords) {
-      return;
-    }
-    _resumeController.text = (_currentWordIndex + 1).toString();
-    setState(() {
-      _statusMessage =
-          'Numero di ripresa impostato: ${_resumeController.text}. Copialo e riparti da qui.';
-    });
-    _saveCurrentSession();
-  }
-
-  void _resumeFromInput() {
-    if (!_hasWords) {
-      return;
-    }
-
-    final parsed = int.tryParse(_resumeController.text.trim());
-    if (parsed == null) {
-      setState(() {
-        _statusMessage =
-            'Numero di ripresa non valido. Inserisci un numero tra 1 e ${_words.length}.';
-      });
-      return;
-    }
-
-    final targetIndex = (parsed - 1).clamp(0, _words.length - 1);
-    if (targetIndex != parsed - 1) {
-      _resumeController.text = (targetIndex + 1).toString();
-      setState(() {
-        _statusMessage =
-            'Numero fuori range. Usato automaticamente ${targetIndex + 1}.';
-      });
-    }
-
-    if (_ticker.isActive) {
-      _ticker.stop();
-    }
-
-    setState(() {
-      _currentWordIndex = targetIndex.toInt();
-      _isPlaying = false;
-      _statusMessage = 'Ripreso da ${targetIndex + 1} / ${_words.length}.';
-    });
-    _setActiveTab(_AppTab.reader, animate: false);
-    _saveCurrentSession();
   }
 
   void _startPlayback() {
@@ -724,19 +667,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _setActiveTab(tab);
   }
 
-  void _restartPlayback() {
-    if (_ticker.isActive) {
-      _ticker.stop();
-    }
-
-    setState(() {
-      _currentWordIndex = 0;
-      _isPlaying = false;
-      _statusMessage = 'Reader riportato all inizio.';
-    });
-    _saveCurrentSession();
-  }
-
   void _setSpeed(double value) {
     final shouldResume = _isPlaying;
     if (_ticker.isActive) {
@@ -763,6 +693,36 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   void _adjustSpeedBy(double delta) {
     final nextValue = (_wordsPerMinute + delta).clamp(120.0, 900.0);
     _setSpeed(nextValue);
+  }
+
+  void _rewindBySeconds(int seconds) {
+    if (!_hasWords) {
+      return;
+    }
+
+    final wordsToRewind = math.max(
+      1,
+      ((_wordsPerMinute / 60) * seconds).round(),
+    );
+    final targetIndex = math.max(0, _currentWordIndex - wordsToRewind);
+    final shouldResume = _isPlaying;
+
+    if (_ticker.isActive) {
+      _ticker.stop();
+    }
+
+    setState(() {
+      _currentWordIndex = targetIndex;
+      _isPlaying = shouldResume;
+      _statusMessage = 'Riavvolto di ${seconds}s.';
+    });
+
+    if (shouldResume) {
+      _playbackStartIndex = _currentWordIndex;
+      _ticker.start();
+    }
+
+    _saveCurrentSession();
   }
 
   void _handleIdleReaderTrigger() {
@@ -1037,6 +997,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   Widget _buildBottomPlayerNavigation(BuildContext context) {
     final isPlayerMode = _isPlaying;
+    final showSpeedBar = _activeTab == _AppTab.reader;
 
     return SafeArea(
       top: false,
@@ -1052,37 +1013,42 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
               end: Alignment.bottomRight,
               colors: [Color(0xFF2D1A15), Color(0xFF5E2C1F)],
             ),
-            borderRadius: BorderRadius.circular(isPlayerMode ? 28 : 26),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: isPlayerMode ? 0.16 : 0.1),
-            ),
-            boxShadow: [
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            boxShadow: const [
               BoxShadow(
-                color: isPlayerMode
-                    ? const Color(0x28000000)
-                    : const Color(0x22000000),
-                blurRadius: isPlayerMode ? 28 : 24,
-                offset: const Offset(0, 14),
+                color: Color(0x28000000),
+                blurRadius: 28,
+                offset: Offset(0, 14),
               ),
             ],
           ),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 240),
-            switchInCurve: Curves.easeOutBack,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) {
-              final offset = Tween<Offset>(
-                begin: const Offset(0, 0.18),
-                end: Offset.zero,
-              ).animate(animation);
-              return FadeTransition(
-                opacity: animation,
-                child: SlideTransition(position: offset, child: child),
-              );
-            },
-            child: isPlayerMode
-                ? _buildActivePlayerBar(context)
-                : _buildIdleNavigationBar(context),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (showSpeedBar) ...[
+                _buildActiveSpeedBar(context),
+                const SizedBox(height: 10),
+              ],
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 240),
+                switchInCurve: Curves.easeOutBack,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) {
+                  final offset = Tween<Offset>(
+                    begin: const Offset(0, 0.18),
+                    end: Offset.zero,
+                  ).animate(animation);
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(position: offset, child: child),
+                  );
+                },
+                child: isPlayerMode
+                    ? _buildActivePlayerBar(context)
+                    : _buildIdleNavigationBar(context),
+              ),
+            ],
           ),
         ),
       ),
@@ -1201,15 +1167,57 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildActiveSpeedBar(BuildContext context) {
+    return Container(
+      height: 46,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildPlayerModeButton(
+              icon: Icons.remove_rounded,
+              onPressed: () => _adjustSpeedBy(-20),
+              tooltip: 'Rallenta di 20 WPM',
+              compact: true,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(
+              '${_wordsPerMinute.round()} WPM',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w900,
+                letterSpacing: -0.4,
+              ),
+            ),
+          ),
+          Expanded(
+            child: _buildPlayerModeButton(
+              icon: Icons.add_rounded,
+              onPressed: () => _adjustSpeedBy(20),
+              tooltip: 'Velocizza di 20 WPM',
+              compact: true,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildActivePlayerBar(BuildContext context) {
     return Row(
-      key: const ValueKey('bottom-nav-player'),
       children: [
         Expanded(
           child: _buildPlayerModeButton(
-            icon: Icons.fast_rewind_rounded,
-            onPressed: _hasWords ? () => _adjustSpeedBy(-20) : null,
-            tooltip: 'Rallenta di 20 WPM',
+            icon: Icons.replay_10_rounded,
+            onPressed: _hasWords ? () => _rewindBySeconds(10) : null,
+            tooltip: 'Torna indietro di 10 secondi',
           ),
         ),
         const SizedBox(width: 10),
@@ -1234,13 +1242,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           ),
         ),
         const SizedBox(width: 10),
-        Expanded(
-          child: _buildPlayerModeButton(
-            icon: Icons.fast_forward_rounded,
-            onPressed: _hasWords ? () => _adjustSpeedBy(20) : null,
-            tooltip: 'Velocizza di 20 WPM',
-          ),
-        ),
+        Expanded(child: _buildPlayerModePlaceholder()),
       ],
     );
   }
@@ -1249,9 +1251,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     required IconData icon,
     required VoidCallback? onPressed,
     required String tooltip,
+    bool compact = false,
   }) {
     return SizedBox(
-      height: 56,
+      height: compact ? 30 : 56,
       child: Tooltip(
         message: tooltip,
         child: FilledButton(
@@ -1263,11 +1266,25 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
             disabledBackgroundColor: Colors.white.withValues(alpha: 0.06),
             disabledForegroundColor: Colors.white.withValues(alpha: 0.35),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(compact ? 14 : 20),
               side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
             ),
+            padding: EdgeInsets.zero,
           ),
-          child: Icon(icon, size: 24),
+          child: Icon(icon, size: compact ? 18 : 24),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayerModePlaceholder() {
+    return SizedBox(
+      height: 56,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
         ),
       ),
     );
@@ -1275,6 +1292,18 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   Widget _buildHomeTab(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
+    final brandStyle =
+        (compact ? textTheme.headlineMedium : textTheme.displaySmall)?.copyWith(
+          fontWeight: FontWeight.w900,
+          letterSpacing: compact ? -1.0 : -1.4,
+          height: 0.92,
+          fontFamily: switch (defaultTargetPlatform) {
+            TargetPlatform.iOS || TargetPlatform.macOS => 'Marker Felt',
+            _ => 'Comic Sans MS',
+          },
+          fontFamilyFallback: const ['Trebuchet MS', 'Arial'],
+        );
+
     return KeyedSubtree(
       key: const ValueKey('home-tab'),
       child: Padding(
@@ -1284,70 +1313,62 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
             constraints: const BoxConstraints(maxWidth: 880),
             child: Column(
               children: [
-                Expanded(
-                  flex: compact ? 3 : 2,
-                  child: Container(
-                    width: double.infinity,
-                    padding: EdgeInsets.all(compact ? 18 : 22),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [_accent, _accentDeep],
-                      ),
-                      borderRadius: BorderRadius.circular(compact ? 28 : 34),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x22000000),
-                          blurRadius: 24,
-                          offset: Offset(0, 16),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Spacer(),
-                        Text(
-                          'Speedy Pizza',
-                          style:
-                              (compact
-                                      ? textTheme.headlineMedium
-                                      : textTheme.displaySmall)
-                                  ?.copyWith(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w900,
-                                    letterSpacing: compact ? -1.2 : -1.8,
-                                    height: 0.94,
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    compact ? 4 : 6,
+                    compact ? 2 : 8,
+                    compact ? 4 : 6,
+                    0,
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            RichText(
+                              text: TextSpan(
+                                style: brandStyle,
+                                children: const [
+                                  TextSpan(
+                                    text: 'Speedy\n',
+                                    style: TextStyle(color: _brandInk),
                                   ),
+                                  TextSpan(
+                                    text: 'Pizza',
+                                    style: TextStyle(color: _brandInkSoft),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Il reader piu veloce del west',
+                              style: textTheme.titleSmall?.copyWith(
+                                color: _muted,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.2,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Il reader piu veloce del west',
-                          style: textTheme.titleMedium?.copyWith(
-                            color: Colors.white.withValues(alpha: 0.88),
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: -0.4,
-                          ),
+                      ),
+                      const SizedBox(width: 12),
+                      Padding(
+                        padding: EdgeInsets.only(top: compact ? 8 : 12),
+                        child: Image.asset(
+                          'web/pizzalogo.png',
+                          width: compact ? 34 : 40,
+                          height: compact ? 34 : 40,
                         ),
-                        const SizedBox(height: 10),
-                        Text(
-                          _hasImportedSource
-                              ? 'Ultima sessione pronta su $_activeSourceLabel. Apri la tab play oppure aggiungi un nuovo contenuto.'
-                              : 'Importa un contenuto e scorri tra Home, Play e Impostazioni senza uscire dalla schermata.',
-                          style: textTheme.bodyLarge?.copyWith(
-                            color: Colors.white.withValues(alpha: 0.82),
-                            height: 1.4,
-                          ),
-                        ),
-                        const Spacer(),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
                 Expanded(
-                  flex: 5,
                   child: SizedBox(
                     width: double.infinity,
                     child: InkWell(
@@ -1361,7 +1382,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Ultima sessione',
+                                'Ultimo Libro',
                                 style: textTheme.titleLarge?.copyWith(
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: -0.6,
@@ -1435,50 +1456,48 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
             constraints: const BoxConstraints(maxWidth: 920),
             child: Column(
               children: [
-                DecoratedBox(
-                  decoration: _panelDecoration(radius: compact ? 24 : 28),
-                  child: Padding(
-                    padding: EdgeInsets.all(compact ? 16 : 18),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _activeSourceLabel,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: -0.8,
-                                ),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 4 : 6),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _activeSourceLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: -0.8,
                               ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _hasImportedSource ? 'Libro attivo' : 'Demo',
-                                style: textTheme.bodyMedium?.copyWith(
-                                  color: _muted,
-                                  fontWeight: FontWeight.w700,
-                                ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              _hasImportedSource ? 'Libro attivo' : 'Demo',
+                              style: textTheme.bodyMedium?.copyWith(
+                                color: _muted,
+                                fontWeight: FontWeight.w700,
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
                 Expanded(
                   child: DecoratedBox(
                     decoration: _panelDecoration(radius: compact ? 24 : 30),
                     child: Padding(
-                      padding: EdgeInsets.all(compact ? 18 : 24),
+                      padding: EdgeInsets.all(compact ? 16 : 20),
                       child: Container(
                         width: double.infinity,
                         decoration: BoxDecoration(
-                          color: const Color(0xFFF7EFE8),
+                          color: _surfaceWarm,
                           borderRadius: BorderRadius.circular(
                             compact ? 22 : 28,
                           ),
@@ -1498,7 +1517,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                             Padding(
                               padding: EdgeInsets.symmetric(
                                 horizontal: compact ? 12 : 18,
-                                vertical: compact ? 16 : 20,
+                                vertical: compact ? 14 : 18,
                               ),
                               child: _PivotAlignedWord(
                                 word: _currentWord,
@@ -1520,10 +1539,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     decoration: _panelDecoration(radius: 30),
                     child: Padding(
                       padding: EdgeInsets.fromLTRB(
-                        compact ? 18 : 22,
-                        compact ? 18 : 22,
-                        compact ? 18 : 22,
+                        compact ? 18 : 20,
                         compact ? 16 : 18,
+                        compact ? 18 : 20,
+                        compact ? 14 : 16,
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1546,33 +1565,60 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                                 ),
                             ],
                           ),
-                          const SizedBox(height: 14),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _MetricCard(
-                                  label: 'Capitolo',
-                                  value: _chapterProgressLabel,
-                                  compact: false,
+                          const SizedBox(height: 12),
+                          Container(
+                            width: double.infinity,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: compact ? 10 : 12,
+                              vertical: compact ? 14 : 16,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _surfaceWarm,
+                              borderRadius: BorderRadius.circular(22),
+                              border: Border.all(color: _panelBorder),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _ReaderStatColumn(
+                                    label: 'Capitolo',
+                                    value: _chapterProgressLabel,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _MetricCard(
-                                  label: 'ETA',
-                                  value: _etaLabel,
-                                  compact: false,
+                                Container(
+                                  width: 1,
+                                  height: compact ? 46 : 52,
+                                  color: _panelBorder,
                                 ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _MetricCard(
-                                  label: 'WPM',
-                                  value: '${_wordsPerMinute.round()}',
-                                  compact: false,
+                                Expanded(
+                                  child: _ReaderStatColumn(
+                                    label: 'WPM',
+                                    value: '${_wordsPerMinute.round()}',
+                                    highlight: true,
+                                  ),
                                 ),
-                              ),
-                            ],
+                                Container(
+                                  width: 1,
+                                  height: compact ? 46 : 52,
+                                  color: _panelBorder,
+                                ),
+                                Expanded(
+                                  child: _ReaderStatColumn(
+                                    label: 'ETA',
+                                    value: _etaLabel,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Slider(
+                            min: 120,
+                            max: 900,
+                            divisions: 39,
+                            value: _wordsPerMinute,
+                            label: '${_wordsPerMinute.round()}',
+                            onChanged: _setSpeed,
                           ),
                         ],
                       ),
@@ -1608,261 +1654,35 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Impostazioni',
+                          'Indice',
                           style: textTheme.headlineSmall?.copyWith(
                             fontWeight: FontWeight.w900,
                             letterSpacing: -0.9,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Tutto quello che non deve distrarre Home e Reader vive qui.',
-                          style: textTheme.bodyLarge?.copyWith(
-                            color: _muted,
-                            height: 1.45,
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            _MetricCard(
-                              label: 'Capitolo',
-                              value: _chapterProgressLabel,
-                              compact: true,
-                            ),
-                            _MetricCard(
-                              label: 'Parole',
-                              value: _words.length.toString(),
-                              compact: true,
-                            ),
-                            _MetricCard(
-                              label: 'Posizione',
-                              value: _hasWords
-                                  ? '${_currentWordIndex + 1} / ${_words.length}'
-                                  : '--',
-                              compact: true,
-                            ),
-                            _MetricCard(
-                              label: 'ETA',
-                              value: _etaLabel,
-                              compact: true,
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                DecoratedBox(
-                  decoration: _panelDecoration(radius: compact ? 24 : 30),
-                  child: Padding(
-                    padding: EdgeInsets.all(compact ? 18 : 22),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Text(
-                              'Velocita',
-                              style: textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: -0.6,
-                              ),
-                            ),
-                            const Spacer(),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: _accentSoft,
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: Text(
-                                '${_wordsPerMinute.round()} WPM',
-                                style: textTheme.titleSmall?.copyWith(
-                                  color: _accent,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        Slider(
-                          min: 120,
-                          max: 900,
-                          divisions: 39,
-                          value: _wordsPerMinute,
-                          label: '${_wordsPerMinute.round()}',
-                          onChanged: _setSpeed,
-                        ),
-                        Text(
-                          'Nel reader i bottoni lavorano a step di 20 WPM. Qui resta il controllo fine.',
-                          style: textTheme.bodySmall?.copyWith(
-                            color: _muted,
-                            height: 1.45,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                DecoratedBox(
-                  decoration: _panelDecoration(radius: compact ? 24 : 30),
-                  child: Padding(
-                    padding: EdgeInsets.all(compact ? 18 : 22),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Ripresa',
-                          style: textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -0.6,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        TextField(
-                          controller: _resumeController,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Posizione parola (1 ...)',
-                            hintText: 'Es. 120',
-                            suffixIcon: Icon(Icons.pin_end_rounded),
-                          ),
-                          onSubmitted: (_) => _resumeFromInput(),
-                        ),
                         const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            FilledButton.icon(
-                              onPressed: _resumeFromInput,
-                              icon: const Icon(
-                                Icons.playlist_add_check_circle_rounded,
-                              ),
-                              label: const Text('Riprendi'),
+                        ..._chapterTitles.asMap().entries.map((entry) {
+                          final index = entry.key;
+                          final isSelected = index == _activeChapterIndex;
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _QuickActionTile(
+                              icon: isSelected
+                                  ? Icons.radio_button_checked_rounded
+                                  : Icons.menu_book_rounded,
+                              title:
+                                  '${index + 1}. ${_compactChapterLabel(entry.value)}',
+                              subtitle: isSelected
+                                  ? 'Capitolo attivo'
+                                  : 'Apri questo capitolo nel reader',
+                              selected: isSelected,
+                              onTap: () {
+                                _selectChapter(index);
+                                _navigateToTab(_AppTab.reader);
+                              },
                             ),
-                            OutlinedButton.icon(
-                              onPressed: _setResumeFromCurrent,
-                              icon: const Icon(Icons.bookmark_added_rounded),
-                              label: Text('Punto $_resumePointLabel'),
-                            ),
-                            OutlinedButton.icon(
-                              onPressed: _restartPlayback,
-                              icon: const Icon(Icons.restart_alt_rounded),
-                              label: const Text('Dall inizio'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (_chapterTexts.length > 1) ...[
-                  const SizedBox(height: 16),
-                  DecoratedBox(
-                    decoration: _panelDecoration(radius: compact ? 24 : 30),
-                    child: Padding(
-                      padding: EdgeInsets.all(compact ? 18 : 22),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Capitoli',
-                            style: textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -0.6,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          ..._chapterTitles.asMap().entries.map((entry) {
-                            final index = entry.key;
-                            final isSelected = index == _activeChapterIndex;
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 10),
-                              child: _QuickActionTile(
-                                icon: isSelected
-                                    ? Icons.radio_button_checked_rounded
-                                    : Icons.menu_book_rounded,
-                                title:
-                                    '${index + 1}. ${_compactChapterLabel(entry.value)}',
-                                subtitle: isSelected
-                                    ? 'Capitolo attivo'
-                                    : 'Apri questo capitolo nel reader',
-                                selected: isSelected,
-                                onTap: () {
-                                  _selectChapter(index);
-                                  _navigateToTab(_AppTab.reader);
-                                },
-                              ),
-                            );
-                          }),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                DecoratedBox(
-                  decoration: _panelDecoration(radius: compact ? 24 : 30),
-                  child: Padding(
-                    padding: EdgeInsets.all(compact ? 18 : 22),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Contenuto',
-                          style: textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -0.6,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            FilledButton.tonalIcon(
-                              onPressed: _openAddContentSheet,
-                              icon: const Icon(Icons.add_rounded),
-                              label: const Text('Nuovo contenuto'),
-                            ),
-                            OutlinedButton.icon(
-                              onPressed: _openPasteTextSheet,
-                              icon: const Icon(Icons.notes_rounded),
-                              label: const Text('Incolla testo'),
-                            ),
-                            OutlinedButton.icon(
-                              onPressed: _loadDemoText,
-                              icon: const Icon(Icons.auto_stories_rounded),
-                              label: const Text('Usa demo'),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 18),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF7EFE8),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: _panelBorder),
-                          ),
-                          child: Text(
-                            _statusMessage,
-                            style: textTheme.bodyMedium?.copyWith(
-                              color: _muted,
-                              height: 1.45,
-                            ),
-                          ),
-                        ),
+                          );
+                        }),
                       ],
                     ),
                   ),
@@ -1876,47 +1696,43 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   }
 }
 
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({
+class _ReaderStatColumn extends StatelessWidget {
+  const _ReaderStatColumn({
     required this.label,
     required this.value,
-    required this.compact,
+    this.highlight = false,
   });
 
   final String label;
   final String value;
-  final bool compact;
+  final bool highlight;
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
 
-    return Container(
-      constraints: BoxConstraints(minWidth: compact ? 92 : 100),
-      padding: EdgeInsets.symmetric(
-        horizontal: compact ? 12 : 14,
-        vertical: compact ? 12 : 14,
-      ),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7EFE8),
-        borderRadius: BorderRadius.circular(compact ? 18 : 20),
-        border: Border.all(color: _panelBorder),
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
+            value,
+            textAlign: TextAlign.center,
+            style: textTheme.titleLarge?.copyWith(
+              color: highlight ? _accent : _ink,
+              fontWeight: FontWeight.w900,
+              letterSpacing: -0.8,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
             label,
+            textAlign: TextAlign.center,
             style: textTheme.bodySmall?.copyWith(
               color: _muted,
               fontWeight: FontWeight.w700,
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: (compact ? textTheme.titleMedium : textTheme.titleLarge)
-                ?.copyWith(fontWeight: FontWeight.w900, letterSpacing: -0.8),
           ),
         ],
       ),
@@ -2014,7 +1830,7 @@ class _InlineStatPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7EFE8),
+        color: _surfaceWarm,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: _panelBorder),
       ),
@@ -2057,8 +1873,12 @@ class _PivotAlignedWord extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final availableWidth = math.max(160.0, constraints.maxWidth);
-        final availableHeight = math.max(80.0, constraints.maxHeight);
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : 160.0;
+        final availableHeight = constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : 80.0;
         final parts = _splitAroundPivot(word);
         final layout = _resolveLayout(parts, availableWidth, availableHeight);
 
@@ -2067,7 +1887,7 @@ class _PivotAlignedWord extends StatelessWidget {
           height: availableHeight,
           child: Stack(
             alignment: Alignment.center,
-            clipBehavior: Clip.none,
+            clipBehavior: Clip.hardEdge,
             children: [
               Text(parts.pivot, style: layout.pivotStyle),
               Positioned(
@@ -2077,7 +1897,7 @@ class _PivotAlignedWord extends StatelessWidget {
                   style: layout.baseStyle,
                   textAlign: TextAlign.right,
                   maxLines: 1,
-                  overflow: TextOverflow.visible,
+                  overflow: TextOverflow.clip,
                 ),
               ),
               Positioned(
@@ -2086,7 +1906,7 @@ class _PivotAlignedWord extends StatelessWidget {
                   parts.right,
                   style: layout.baseStyle,
                   maxLines: 1,
-                  overflow: TextOverflow.visible,
+                  overflow: TextOverflow.clip,
                 ),
               ),
             ],
@@ -2101,73 +1921,66 @@ class _PivotAlignedWord extends StatelessWidget {
     double availableWidth,
     double availableHeight,
   ) {
-    final baseSize = _baseFontSizeFor(availableWidth, availableHeight);
+    final baseSize =
+        _baseFontSizeFor(availableWidth, availableHeight) *
+        _fontScaleForWordLength(word.length);
     final baseSpacing = baseSize >= 90
         ? -2.6
         : baseSize >= 68
         ? -2.0
         : -1.3;
-    final targetWidth = availableWidth * 0.92;
-    final targetHeight = availableHeight * 0.76;
+    final baseStyle = TextStyle(
+      fontSize: baseSize,
+      height: 1,
+      fontWeight: FontWeight.w900,
+      color: textColor,
+      letterSpacing: baseSpacing,
+    );
+    final pivotStyle = baseStyle.copyWith(color: accentColor);
+    final pivotSize = _measureText(parts.pivot, pivotStyle);
 
-    _WordLayout buildLayout(double scale) {
-      final fittedFontSize = baseSize * scale;
-      final fittedSpacing = baseSpacing * math.max(0.4, scale);
-      final baseStyle = TextStyle(
-        fontSize: fittedFontSize,
-        height: 1,
-        fontWeight: FontWeight.w900,
-        color: textColor,
-        letterSpacing: fittedSpacing,
-      );
-      final pivotStyle = baseStyle.copyWith(color: accentColor);
-      final leftSize = _measureText(parts.left, baseStyle);
-      final pivotSize = _measureText(parts.pivot, pivotStyle);
-      final rightSize = _measureText(parts.right, baseStyle);
-
-      return _WordLayout(
-        baseStyle: baseStyle,
-        pivotStyle: pivotStyle,
-        pivotWidth: pivotSize.width,
-        totalWidth: leftSize.width + pivotSize.width + rightSize.width,
-        maxHeight: math.max(
-          pivotSize.height,
-          math.max(leftSize.height, rightSize.height),
-        ),
-      );
-    }
-
-    bool fits(_WordLayout layout) =>
-        layout.totalWidth <= targetWidth && layout.maxHeight <= targetHeight;
-
-    final fullSizeLayout = buildLayout(1);
-    if (fits(fullSizeLayout)) {
-      return fullSizeLayout;
-    }
-
-    var low = 0.16;
-    var high = 1.0;
-    var best = buildLayout(low);
-
-    for (var i = 0; i < 14; i += 1) {
-      final mid = (low + high) / 2;
-      final candidate = buildLayout(mid);
-
-      if (fits(candidate)) {
-        best = candidate;
-        low = mid;
-      } else {
-        high = mid;
-      }
-    }
-
-    return best;
+    return _WordLayout(
+      baseStyle: baseStyle,
+      pivotStyle: pivotStyle,
+      pivotWidth: pivotSize.width,
+    );
   }
 
   double _baseFontSizeFor(double availableWidth, double availableHeight) {
     final widthBound = availableWidth * 0.24;
     final heightBound = availableHeight * 0.68;
     return math.min(math.max(44, widthBound), math.max(44, heightBound));
+  }
+
+  double _fontScaleForWordLength(int length) {
+    if (length <= 8) {
+      return 1.0;
+    }
+    if (length == 9) {
+      return 0.97;
+    }
+    if (length == 10) {
+      return 0.94;
+    }
+    if (length == 11) {
+      return 0.91;
+    }
+    if (length == 12) {
+      return 0.88;
+    }
+    if (length == 13) {
+      return 0.84;
+    }
+    if (length == 14) {
+      return 0.8;
+    }
+    if (length == 15) {
+      return 0.76;
+    }
+    if (length == 16) {
+      return 0.72;
+    }
+    return math.max(0.58, 0.72 - ((length - 16) * 0.035));
   }
 
   Size _measureText(String text, TextStyle style) {
@@ -2185,15 +1998,11 @@ class _WordLayout {
     required this.baseStyle,
     required this.pivotStyle,
     required this.pivotWidth,
-    required this.totalWidth,
-    required this.maxHeight,
   });
 
   final TextStyle baseStyle;
   final TextStyle pivotStyle;
   final double pivotWidth;
-  final double totalWidth;
-  final double maxHeight;
 }
 
 String _compactChapterLabel(String title) {
