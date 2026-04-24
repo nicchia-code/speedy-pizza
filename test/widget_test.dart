@@ -22,6 +22,8 @@ void main() {
     expect(find.text('Ultimo Libro'), findsNothing);
     expect(find.text('Aggiungi contenuto'), findsNothing);
     expect(find.byIcon(Icons.upload_file_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.menu_book_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.settings_rounded), findsNothing);
 
     await tester.tap(find.byIcon(Icons.upload_file_rounded));
     await tester.pump();

@@ -1315,7 +1315,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
         Expanded(
           child: _buildIdleNavButton(
             tab: _AppTab.settings,
-            icon: Icons.settings_rounded,
+            icon: Icons.menu_book_rounded,
           ),
         ),
       ],
@@ -2128,6 +2128,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                               child: ExpansionTile(
                                 initiallyExpanded:
                                     isGroupActive || groups.length == 1,
+                                shape: const Border(),
+                                collapsedShape: const Border(),
+                                backgroundColor: Colors.transparent,
+                                collapsedBackgroundColor: Colors.transparent,
                                 tilePadding: const EdgeInsets.symmetric(
                                   horizontal: 14,
                                   vertical: 4,
