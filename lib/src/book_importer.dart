@@ -13,6 +13,11 @@ class ImportedBook {
     required this.formatLabel,
     required this.chapterTexts,
     required this.chapterTitles,
+    this.authors = const <String>[],
+    this.spoilerFreeSummary,
+    this.metadata = const <String, Object?>{},
+    this.sectionSingularLabel = 'Capitolo',
+    this.sectionPluralLabel = 'Capitoli',
   });
 
   final String name;
@@ -20,6 +25,11 @@ class ImportedBook {
   final String formatLabel;
   final List<String> chapterTexts;
   final List<String> chapterTitles;
+  final List<String> authors;
+  final String? spoilerFreeSummary;
+  final Map<String, Object?> metadata;
+  final String sectionSingularLabel;
+  final String sectionPluralLabel;
 }
 
 Future<ImportedBook> importBook(PickedSourceFile file) async {
@@ -85,7 +95,11 @@ Future<ImportedBook> importBook(PickedSourceFile file) async {
       );
       return imported;
     case 'pb':
-      final chapters = _extractPbChapters(file.bytes);
+      final document = _extractPbDocument(file.bytes);
+      final metadata = document.metadata;
+      _validatePbMetadata(document);
+      final isConceptBased = _isConceptPbMetadata(metadata);
+      final chapters = document.chapters;
       final chapterTexts = <String>[];
       final chapterTitles = <String>[];
 
@@ -99,15 +113,27 @@ Future<ImportedBook> importBook(PickedSourceFile file) async {
       }
 
       final joinedText = _normalizeImportedText(chapterTexts.join('\n\n'));
+      final bookName = _metadataText(metadata['title'])!;
+      final authors = _metadataStringList(metadata['authors']);
+      final spoilerFreeSummary = _metadataText(
+        metadata['spoiler_free_summary'],
+      );
       final imported = ImportedBook(
-        name: file.name,
+        name: bookName,
         text: joinedText,
         formatLabel: 'PB',
         chapterTexts: chapterTexts,
         chapterTitles: chapterTitles,
+        authors: authors,
+        spoilerFreeSummary: spoilerFreeSummary,
+        metadata: metadata,
+        sectionSingularLabel: isConceptBased ? 'Frammento' : 'Capitolo',
+        sectionPluralLabel: isConceptBased ? 'Frammenti' : 'Capitoli',
       );
       _log(
-        'importBook done: ${imported.formatLabel}, chapters=${chapterTexts.length}, totalChars=${imported.text.length}',
+        'importBook done: ${imported.formatLabel}, chapters=${chapterTexts.length}, '
+        'authors=${authors.length}, summaryChars=${spoilerFreeSummary?.length ?? 0}, '
+        'totalChars=${imported.text.length}',
       );
       return imported;
     default:
@@ -130,8 +156,160 @@ Future<ImportedBook> importBook(PickedSourceFile file) async {
   }
 }
 
-List<_PbChapter> _extractPbChapters(Uint8List bytes) {
+const _pbMetadataBegin = ';;;PB-METADATA-BEGIN;;;';
+const _pbMetadataEnd = ';;;PB-METADATA-END;;;';
+
+String? _metadataText(Object? value) {
+  if (value is! String) {
+    return null;
+  }
+  final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.isEmpty) {
+    return null;
+  }
+  return normalized;
+}
+
+List<String> _metadataStringList(Object? value) {
+  if (value is! List) {
+    return const <String>[];
+  }
+
+  final result = <String>[];
+  final seen = <String>{};
+  for (final item in value) {
+    if (item is! String) {
+      continue;
+    }
+    final normalized = item.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) {
+      continue;
+    }
+    final key = normalized.toLowerCase();
+    if (seen.contains(key)) {
+      continue;
+    }
+    result.add(normalized);
+    seen.add(key);
+  }
+  return result;
+}
+
+int? _metadataInt(Object? value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is String) {
+    return int.tryParse(value);
+  }
+  return null;
+}
+
+bool _isConceptPbMetadata(Map<String, Object?> metadata) {
+  return (_metadataInt(metadata['metadata_version']) ?? 1) >= 2;
+}
+
+class _PbDocument {
+  const _PbDocument({
+    required this.chapters,
+    required this.hasMetadata,
+    this.metadata = const <String, Object?>{},
+  });
+
+  final List<_PbChapter> chapters;
+  final bool hasMetadata;
+  final Map<String, Object?> metadata;
+}
+
+class _PbSource {
+  const _PbSource({
+    required this.content,
+    required this.hasMetadata,
+    this.metadata = const <String, Object?>{},
+  });
+
+  final String content;
+  final bool hasMetadata;
+  final Map<String, Object?> metadata;
+}
+
+_PbDocument _extractPbDocument(Uint8List bytes) {
   final source = _decodeTextBytes(bytes);
+  final parsedSource = _splitPbMetadata(source);
+  final chapters = _isConceptPbMetadata(parsedSource.metadata)
+      ? _extractPbConceptsFromText(parsedSource.content)
+      : _extractPbChaptersFromText(parsedSource.content);
+  return _PbDocument(
+    chapters: chapters,
+    hasMetadata: parsedSource.hasMetadata,
+    metadata: parsedSource.metadata,
+  );
+}
+
+void _validatePbMetadata(_PbDocument document) {
+  final metadata = document.metadata;
+  final title = _metadataText(metadata['title']);
+  final authors = metadata['authors'];
+  final summary = _metadataText(metadata['spoiler_free_summary']);
+
+  if (!document.hasMetadata ||
+      title == null ||
+      authors is! List ||
+      summary == null) {
+    throw const FormatException(
+      'File .pb senza metadati aggiornati: mancano title, authors o spoiler_free_summary. Rigeneralo con prepare-book.',
+    );
+  }
+}
+
+_PbSource _splitPbMetadata(String source) {
+  final normalizedSource = source.replaceAll('\r\n', '\n');
+  final rawLines = normalizedSource.split('\n');
+
+  var firstContentLine = 0;
+  while (firstContentLine < rawLines.length &&
+      rawLines[firstContentLine].trim().isEmpty) {
+    firstContentLine += 1;
+  }
+
+  if (firstContentLine >= rawLines.length ||
+      rawLines[firstContentLine].trim() != _pbMetadataBegin) {
+    return _PbSource(content: source, hasMetadata: false);
+  }
+
+  final metadataLines = <String>[];
+  var endLine = -1;
+  for (var i = firstContentLine + 1; i < rawLines.length; i++) {
+    final trimmed = rawLines[i].trim();
+    if (trimmed == _pbMetadataEnd) {
+      endLine = i;
+      break;
+    }
+    metadataLines.add(rawLines[i]);
+  }
+
+  if (endLine == -1) {
+    return _PbSource(content: source, hasMetadata: false);
+  }
+
+  final metadataJson = metadataLines.join('\n').trim();
+  Map<String, Object?> metadata = const <String, Object?>{};
+  if (metadataJson.isNotEmpty) {
+    try {
+      final decoded = jsonDecode(metadataJson);
+      if (decoded is Map) {
+        metadata = decoded.map((key, value) => MapEntry(key.toString(), value));
+      }
+    } catch (_) {
+      metadata = const <String, Object?>{};
+    }
+  }
+
+  final content = rawLines.sublist(endLine + 1).join('\n');
+  return _PbSource(content: content, hasMetadata: true, metadata: metadata);
+}
+
+List<_PbChapter> _extractPbChaptersFromText(String source) {
   final rawLines = source.replaceAll('\r\n', '\n').split('\n');
   final parsedChapters = <_PbChapter>[];
 
@@ -192,6 +370,105 @@ List<_PbChapter> _extractPbChapters(Uint8List bytes) {
   }
 
   return parsedChapters;
+}
+
+List<_PbChapter> _extractPbConceptsFromText(String source) {
+  final rawLines = source.replaceAll('\r\n', '\n').split('\n');
+  final parsedConcepts = <_PbChapter>[];
+
+  var chapterTitle = '';
+  var conceptTitle = '';
+  var fallbackConceptIndex = 1;
+  var foundConceptMarker = false;
+  var isInsideConcept = false;
+  final sectionBuffer = StringBuffer();
+  final chapterMarkerRegex = RegExp(r'^\s*={5,}\s*(.*?)\s*={5,}\s*$');
+  final conceptMarkerRegex = RegExp(r'^\s*-{5,}\s*(.*?)\s*-{5,}\s*$');
+
+  void flushConcept() {
+    if (!isInsideConcept) {
+      sectionBuffer.clear();
+      return;
+    }
+
+    final normalizedText = _normalizeImportedText(sectionBuffer.toString());
+    if (normalizedText.isNotEmpty) {
+      parsedConcepts.add(
+        _PbChapter(
+          title: _combinePbConceptTitle(chapterTitle, conceptTitle),
+          text: normalizedText,
+        ),
+      );
+    }
+    sectionBuffer.clear();
+  }
+
+  for (final line in rawLines) {
+    final trimmed = line.trim();
+
+    final chapterMarkerMatch = chapterMarkerRegex.firstMatch(trimmed);
+    if (chapterMarkerMatch != null && chapterMarkerMatch.groupCount > 0) {
+      flushConcept();
+      chapterTitle = _cleanPbStructuredMarkerTitle(chapterMarkerMatch.group(1));
+      conceptTitle = '';
+      isInsideConcept = false;
+      continue;
+    }
+
+    final conceptMarkerMatch = conceptMarkerRegex.firstMatch(trimmed);
+    if (conceptMarkerMatch != null && conceptMarkerMatch.groupCount > 0) {
+      flushConcept();
+      conceptTitle = _cleanPbStructuredMarkerTitle(conceptMarkerMatch.group(1));
+      if (conceptTitle.isEmpty) {
+        conceptTitle = 'Frammento $fallbackConceptIndex';
+      }
+      fallbackConceptIndex += 1;
+      foundConceptMarker = true;
+      isInsideConcept = true;
+      continue;
+    }
+
+    if (isInsideConcept) {
+      sectionBuffer.writeln(line);
+    }
+  }
+
+  flushConcept();
+
+  if (parsedConcepts.isEmpty && !foundConceptMarker) {
+    return _extractPbChaptersFromText(source);
+  }
+
+  return parsedConcepts;
+}
+
+String _cleanPbStructuredMarkerTitle(String? rawTitle) {
+  final normalized = (rawTitle ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.isEmpty) {
+    return '';
+  }
+  return normalized
+      .replaceFirst(
+        RegExp(
+          r'^(?:chapter|capitolo|concept|concetto)\s+[\d.]+\s*:\s*',
+          caseSensitive: false,
+        ),
+        '',
+      )
+      .trim();
+}
+
+String _combinePbConceptTitle(String chapterTitle, String conceptTitle) {
+  final cleanChapterTitle = chapterTitle.trim();
+  final cleanConceptTitle = conceptTitle.trim();
+  if (cleanChapterTitle.isEmpty) {
+    return cleanConceptTitle.isEmpty ? 'Frammento' : cleanConceptTitle;
+  }
+  if (cleanConceptTitle.isEmpty ||
+      cleanChapterTitle.toLowerCase() == cleanConceptTitle.toLowerCase()) {
+    return cleanChapterTitle;
+  }
+  return '$cleanChapterTitle - $cleanConceptTitle';
 }
 
 class _PbChapter {

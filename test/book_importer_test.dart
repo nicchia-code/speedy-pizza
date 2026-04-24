@@ -83,6 +83,15 @@ void main() {
         name: 'book.pb',
         bytes: Uint8List.fromList(
           utf8.encode('''
+;;;PB-METADATA-BEGIN;;;
+{
+  "metadata_version": 1,
+  "title": "Libro Test",
+  "authors": ["Autore Test"],
+  "spoiler_free_summary": "Una descrizione senza spoiler."
+}
+;;;PB-METADATA-END;;;
+
 ===== CAPITOLO 1 =====
 Prima parte.
 
@@ -94,6 +103,9 @@ Seconda parte.
     );
 
     expect(imported.formatLabel, 'PB');
+    expect(imported.name, 'Libro Test');
+    expect(imported.authors, ['Autore Test']);
+    expect(imported.spoilerFreeSummary, 'Una descrizione senza spoiler.');
     expect(imported.chapterTexts.length, 2);
     expect(imported.chapterTitles, ['CAPITOLO 1', 'CAPITOLO 2']);
     expect(imported.text, contains('Prima parte.'));
@@ -106,6 +118,15 @@ Seconda parte.
         name: 'generic.pb',
         bytes: Uint8List.fromList(
           utf8.encode('''
+;;;PB-METADATA-BEGIN;;;
+{
+  "metadata_version": 1,
+  "title": "Libro Generico",
+  "authors": ["Autrice"],
+  "spoiler_free_summary": "Una descrizione breve."
+}
+;;;PB-METADATA-END;;;
+
 ===== PROLOGO =====
 Intro.
 
@@ -117,9 +138,117 @@ Testo finale.
     );
 
     expect(imported.formatLabel, 'PB');
+    expect(imported.name, 'Libro Generico');
     expect(imported.chapterTexts.length, 2);
     expect(imported.chapterTitles, ['PROLOGO', 'PARTE DUE']);
     expect(imported.chapterTexts.first, 'Intro.');
     expect(imported.chapterTexts.last, 'Testo finale.');
+  });
+
+  test('imports pb v2 concepts as reader sections', () async {
+    final imported = await importBook(
+      PickedSourceFile(
+        name: 'concepts.pb',
+        bytes: Uint8List.fromList(
+          utf8.encode('''
+;;;PB-METADATA-BEGIN;;;
+{
+  "metadata_version": 2,
+  "title": "Libro a concetti",
+  "authors": ["Autrice"],
+  "spoiler_free_summary": "Una descrizione breve.",
+  "chapter_count": 1,
+  "concept_count": 2,
+  "chapters": [
+    {
+      "index": 1,
+      "title": "Le nozze di Sandokan",
+      "concept_count": 2,
+      "concepts": [
+        {"index": 1, "global_index": 1, "title": "Ingresso", "word_count": 320},
+        {"index": 2, "global_index": 2, "title": "Decisione", "word_count": 340}
+      ]
+    }
+  ]
+}
+;;;PB-METADATA-END;;;
+
+===== CHAPTER 001: Le nozze di Sandokan =====
+
+----- CONCEPT 001.001: Ingresso -----
+Prima parte del testo reale.
+
+----- CONCEPT 001.002: Decisione -----
+Seconda parte del testo reale.
+'''),
+        ),
+      ),
+    );
+
+    expect(imported.formatLabel, 'PB');
+    expect(imported.name, 'Libro a concetti');
+    expect(imported.sectionSingularLabel, 'Frammento');
+    expect(imported.sectionPluralLabel, 'Frammenti');
+    expect(imported.chapterTitles, [
+      'Le nozze di Sandokan - Ingresso',
+      'Le nozze di Sandokan - Decisione',
+    ]);
+    expect(imported.chapterTexts, [
+      'Prima parte del testo reale.',
+      'Seconda parte del testo reale.',
+    ]);
+    expect(imported.text, isNot(contains('CONCEPT 001.001')));
+    expect(imported.text, isNot(contains('CHAPTER 001')));
+  });
+
+  test('rejects pb files without current metadata', () async {
+    expect(
+      () => importBook(
+        PickedSourceFile(
+          name: 'legacy.pb',
+          bytes: Uint8List.fromList(
+            utf8.encode('''
+===== CAPITOLO 1 =====
+Prima parte.
+'''),
+          ),
+        ),
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test('imports pb metadata title and authors', () async {
+    final imported = await importBook(
+      PickedSourceFile(
+        name: 'metadata.pb',
+        bytes: Uint8List.fromList(
+          utf8.encode('''
+;;;PB-METADATA-BEGIN;;;
+{
+  "metadata_version": 1,
+  "title": "Libro dai metadata",
+  "authors": ["Autrice Test", "Coautore Test"],
+  "spoiler_free_summary": "Una descrizione senza spoiler del libro."
+}
+;;;PB-METADATA-END;;;
+
+===== PRIMO =====
+Contenuto.
+'''),
+        ),
+      ),
+    );
+
+    expect(imported.name, 'Libro dai metadata');
+    expect(imported.formatLabel, 'PB');
+    expect(imported.authors, ['Autrice Test', 'Coautore Test']);
+    expect(
+      imported.spoilerFreeSummary,
+      'Una descrizione senza spoiler del libro.',
+    );
+    expect(imported.metadata['authors'], ['Autrice Test', 'Coautore Test']);
+    expect(imported.chapterTitles, ['PRIMO']);
+    expect(imported.chapterTexts, ['Contenuto.']);
   });
 }

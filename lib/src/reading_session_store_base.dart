@@ -1,10 +1,14 @@
 class SavedReadingSession {
   const SavedReadingSession({
     required this.bookName,
+    this.bookAuthors = const <String>[],
+    this.bookSummary,
     required this.formatLabel,
     required this.bookText,
     required this.chapterTexts,
     required this.chapterTitles,
+    this.sectionSingularLabel = 'Capitolo',
+    this.sectionPluralLabel = 'Capitoli',
     required this.resumeChapterIndex,
     required this.resumeWordIndex,
     required this.totalWords,
@@ -12,10 +16,14 @@ class SavedReadingSession {
   });
 
   final String? bookName;
+  final List<String> bookAuthors;
+  final String? bookSummary;
   final String? formatLabel;
   final String? bookText;
   final List<String> chapterTexts;
   final List<String> chapterTitles;
+  final String sectionSingularLabel;
+  final String sectionPluralLabel;
   final int resumeChapterIndex;
   final int? resumeWordIndex;
   final int totalWords;
@@ -23,10 +31,14 @@ class SavedReadingSession {
 
   Map<String, dynamic> toJson() => {
     'bookName': bookName,
+    'bookAuthors': bookAuthors,
+    'bookSummary': bookSummary,
     'formatLabel': formatLabel,
     'bookText': bookText,
     'chapterTexts': chapterTexts,
     'chapterTitles': chapterTitles,
+    'sectionSingularLabel': sectionSingularLabel,
+    'sectionPluralLabel': sectionPluralLabel,
     'resumeChapterIndex': resumeChapterIndex,
     'resumeWordIndex': resumeWordIndex,
     'totalWords': totalWords,
@@ -46,8 +58,10 @@ class SavedReadingSession {
 
     final rawChapterTexts = value['chapterTexts'];
     final rawChapterTitles = value['chapterTitles'];
+    final rawBookAuthors = value['bookAuthors'];
     final chapterTexts = <String>[];
     final chapterTitles = <String>[];
+    final bookAuthors = <String>[];
 
     if (rawChapterTexts is List) {
       for (final item in rawChapterTexts) {
@@ -65,19 +79,42 @@ class SavedReadingSession {
       }
     }
 
+    if (rawBookAuthors is List) {
+      for (final item in rawBookAuthors) {
+        if (item is String && item.trim().isNotEmpty) {
+          bookAuthors.add(item.trim());
+        }
+      }
+    }
+
     if (chapterTexts.isEmpty) {
       if (value['bookText'] is String) {
         chapterTexts.add(value['bookText'] as String);
       }
     }
 
+    final sectionSingularLabel =
+        value['sectionSingularLabel'] is String &&
+            (value['sectionSingularLabel'] as String).trim().isNotEmpty
+        ? (value['sectionSingularLabel'] as String).trim()
+        : 'Capitolo';
+    final sectionPluralLabel =
+        value['sectionPluralLabel'] is String &&
+            (value['sectionPluralLabel'] as String).trim().isNotEmpty
+        ? (value['sectionPluralLabel'] as String).trim()
+        : 'Capitoli';
+
     if (chapterTitles.isEmpty) {
-      chapterTitles.add('Capitolo');
+      chapterTitles.add(sectionSingularLabel);
     }
 
     return SavedReadingSession(
       bookName: value['bookName'] is String
           ? value['bookName'] as String
+          : null,
+      bookAuthors: bookAuthors,
+      bookSummary: value['bookSummary'] is String
+          ? value['bookSummary'] as String
           : null,
       formatLabel: value['formatLabel'] is String
           ? value['formatLabel'] as String
@@ -87,6 +124,8 @@ class SavedReadingSession {
           : null,
       chapterTexts: chapterTexts,
       chapterTitles: chapterTitles,
+      sectionSingularLabel: sectionSingularLabel,
+      sectionPluralLabel: sectionPluralLabel,
       resumeChapterIndex: value['resumeChapterIndex'] is int
           ? value['resumeChapterIndex'] as int
           : int.tryParse('${value['resumeChapterIndex']}') ?? 0,

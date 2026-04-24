@@ -22,6 +22,7 @@ const _track = Color(0xFFE7D9CE);
 const _brandInk = Color(0xFF57524E);
 const _brandInkSoft = Color(0xFF6E6863);
 const _surfaceWarm = Color(0xFFF7EFE8);
+const _holdLookbackWords = 100;
 
 const _demoText = '''
 Leggere veloce non vuol dire correre a caso.
@@ -36,7 +37,10 @@ void main() {
 enum _AppTab { home, reader, settings }
 
 class SpeedyReaderApp extends StatelessWidget {
-  const SpeedyReaderApp({super.key});
+  const SpeedyReaderApp({super.key, this.textSourcePicker, this.sessionStore});
+
+  final TextSourcePicker? textSourcePicker;
+  final ReadingSessionStore? sessionStore;
 
   @override
   Widget build(BuildContext context) {
@@ -85,13 +89,19 @@ class SpeedyReaderApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const ReaderPage(),
+      home: ReaderPage(
+        textSourcePicker: textSourcePicker,
+        sessionStore: sessionStore,
+      ),
     );
   }
 }
 
 class ReaderPage extends StatefulWidget {
-  const ReaderPage({super.key});
+  const ReaderPage({super.key, this.textSourcePicker, this.sessionStore});
+
+  final TextSourcePicker? textSourcePicker;
+  final ReadingSessionStore? sessionStore;
 
   @override
   State<ReaderPage> createState() => _ReaderPageState();
@@ -102,8 +112,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     text: _demoText,
   );
   final TextEditingController _draftTextController = TextEditingController();
-  final TextSourcePicker _textSourcePicker = createTextSourcePicker();
-  final ReadingSessionStore _sessionStore = createReadingSessionStore();
+  late final TextSourcePicker _textSourcePicker;
+  late final ReadingSessionStore _sessionStore;
 
   late final Ticker _ticker;
   late final AnimationController _readerPlayHintController;
@@ -112,13 +122,21 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   List<String> _words = _tokenize(_demoText);
   List<String> _chapterTexts = const [_demoText];
   List<String> _chapterTitles = const ['Demo'];
+  String _sectionSingularLabel = 'Capitolo';
+  String _sectionPluralLabel = 'Capitoli';
+  List<int> _chapterWordCounts = [_tokenize(_demoText).length];
   int _activeChapterIndex = 0;
   int _currentWordIndex = 0;
   int _playbackStartIndex = 0;
   double _wordsPerMinute = 320;
   bool _isPlaying = false;
+  bool _isHoldModeEnabled = true;
+  bool _isHoldActive = false;
+  int? _holdPointer;
   _AppTab _activeTab = _AppTab.home;
   String? _loadedFileName;
+  List<String> _loadedBookAuthors = const <String>[];
+  String? _loadedBookSummary;
   String? _loadedFormatLabel;
   String _statusMessage =
       'Demo pronta. Incolla il testo oppure carica un ebook.';
@@ -144,12 +162,46 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   String get _activeSourceLabel => _prettifySourceName(_loadedFileName);
 
-  bool get _hasImportedSource => _loadedFileName != null;
+  String? get _activeAuthorLabel =>
+      _loadedBookAuthors.isEmpty ? null : _loadedBookAuthors.join(', ');
+
+  String? get _activeBookSummary => _cleanNullableText(_loadedBookSummary);
+
   bool get _showReaderPlayTrigger =>
-      _activeTab == _AppTab.reader && !_isPlaying;
+      _activeTab == _AppTab.reader && !_isPlaying && !_isAtFragmentEnd;
 
   String get _chapterProgressLabel =>
       '${_activeChapterIndex + 1} / ${_chapterTexts.length}';
+
+  String get _sectionSingularLower => _sectionSingularLabel.toLowerCase();
+
+  bool get _isAtFragmentStart => !_hasWords || _currentWordIndex <= 0;
+
+  bool get _isAtFragmentEnd =>
+      _hasWords && _currentWordIndex >= _words.length - 1;
+
+  bool get _hasNextFragment => _activeChapterIndex < _chapterTexts.length - 1;
+
+  String get _remainingChaptersEtaLabel {
+    if (_chapterTexts.isEmpty ||
+        _activeChapterIndex >= _chapterTexts.length - 1) {
+      return '0m';
+    }
+
+    final remainingWords = _chapterWordCounts
+        .skip(_activeChapterIndex + 1)
+        .fold<int>(0, (total, count) => total + count);
+
+    if (remainingWords <= 0) {
+      return '0m';
+    }
+
+    final seconds = ((remainingWords / _wordsPerMinute) * 60).ceil();
+    if (seconds < 60) {
+      return '${seconds}s';
+    }
+    return '${(seconds / 60).ceil()}m';
+  }
 
   String _prettifySourceName(String? rawName) {
     if (rawName == null || rawName.trim().isEmpty) {
@@ -177,9 +229,52 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return '${lower[0].toUpperCase()}${lower.substring(1)}';
   }
 
+  String? _cleanNullableText(String? value) {
+    final normalized = value?.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized == null || normalized.isEmpty) {
+      return null;
+    }
+    return normalized;
+  }
+
+  List<String> _coerceBookAuthors(List<String> authors) {
+    final result = <String>[];
+    final seen = <String>{};
+    for (final author in authors) {
+      final normalized = _cleanNullableText(author);
+      if (normalized == null) {
+        continue;
+      }
+      final key = normalized.toLowerCase();
+      if (seen.contains(key)) {
+        continue;
+      }
+      result.add(normalized);
+      seen.add(key);
+    }
+    return result;
+  }
+
+  String _coerceSectionLabel(String? label, String fallback) {
+    final normalized = label?.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized == null || normalized.isEmpty) {
+      return fallback;
+    }
+    final lower = normalized.toLowerCase();
+    if (lower == 'concetto') {
+      return 'Frammento';
+    }
+    if (lower == 'concetti') {
+      return 'Frammenti';
+    }
+    return normalized;
+  }
+
   @override
   void initState() {
     super.initState();
+    _textSourcePicker = widget.textSourcePicker ?? createTextSourcePicker();
+    _sessionStore = widget.sessionStore ?? createReadingSessionStore();
     _ticker = createTicker(_handleTick);
     _readerPlayHintController = AnimationController(
       vsync: this,
@@ -216,9 +311,18 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
 
     final chapterTexts = _coerceChapterTexts(session.chapterTexts);
+    final sectionSingularLabel = _coerceSectionLabel(
+      session.sectionSingularLabel,
+      'Capitolo',
+    );
+    final sectionPluralLabel = _coerceSectionLabel(
+      session.sectionPluralLabel,
+      'Capitoli',
+    );
     final chapterTitles = _coerceChapterTitles(
       session.chapterTitles,
       chapterTexts.length,
+      fallbackLabel: sectionSingularLabel,
     );
     final chapterIndex = _clampChapterIndex(
       session.resumeChapterIndex,
@@ -232,6 +336,9 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
     _chapterTexts = chapterTexts;
     _chapterTitles = chapterTitles;
+    _sectionSingularLabel = sectionSingularLabel;
+    _sectionPluralLabel = sectionPluralLabel;
+    _chapterWordCounts = _wordCountsForChapters(chapterTexts);
     _activeChapterIndex = chapterIndex;
 
     final words = _tokenize(chapterTexts[chapterIndex]);
@@ -248,15 +355,19 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _textController.text = chapterTexts[chapterIndex];
     _draftTextController.clear();
     _loadedFileName = session.bookName ?? 'Ultimo libro';
+    _loadedBookAuthors = _coerceBookAuthors(session.bookAuthors);
+    _loadedBookSummary = _cleanNullableText(session.bookSummary);
     _loadedFormatLabel = session.formatLabel;
     _log(
       'restoreSession: '
       'book=${_loadedFileName}, format=${_loadedFormatLabel ?? 'unknown'}, '
+      'authors=${_loadedBookAuthors.join(', ')}, '
+      'summaryChars=${_loadedBookSummary?.length ?? 0}, '
       'index=${restoredIndex + 1}/${words.length}',
     );
     _prepareText(
       message:
-          'Ripristinata sessione precedente (${_loadedFileName}). Capitolo '
+          'Ripristinata sessione precedente (${_loadedFileName}). $_sectionSingularLabel '
           '${_activeChapterIndex + 1}/${_chapterTexts.length}, '
           'posizione ${restoredIndex + 1} / ${words.length}.',
       initialIndex: restoredIndex,
@@ -288,15 +399,23 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return normalized;
   }
 
-  List<String> _coerceChapterTitles(List<String> input, int count) {
+  List<String> _coerceChapterTitles(
+    List<String> input,
+    int count, {
+    String fallbackLabel = 'Capitolo',
+  }) {
     final result = <String>[];
     for (var index = 0; index < count; index += 1) {
       final title = index < input.length && input[index].trim().isNotEmpty
           ? input[index].trim()
-          : 'Capitolo ${index + 1}';
+          : '$fallbackLabel ${index + 1}';
       result.add(title);
     }
     return result;
+  }
+
+  List<int> _wordCountsForChapters(List<String> chapters) {
+    return chapters.map((chapter) => _tokenize(chapter).length).toList();
   }
 
   String _normalizeText(String source) {
@@ -326,9 +445,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     await _sessionStore.saveSession(
       SavedReadingSession(
         bookName: _loadedFileName,
+        bookAuthors: _loadedBookAuthors,
+        bookSummary: _loadedBookSummary,
         formatLabel: _loadedFormatLabel,
         chapterTexts: _chapterTexts,
         chapterTitles: _chapterTitles,
+        sectionSingularLabel: _sectionSingularLabel,
+        sectionPluralLabel: _sectionPluralLabel,
         resumeChapterIndex: _activeChapterIndex,
         bookText: _textController.text,
         resumeWordIndex: _currentWordIndex,
@@ -355,13 +478,17 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
 
     final shouldPersist =
-        nextIndex != _currentWordIndex && (nextIndex % 5 == 0 || reachedEnd);
+        !_isHoldActive &&
+        nextIndex != _currentWordIndex &&
+        (nextIndex % 5 == 0 || reachedEnd);
 
     setState(() {
       _currentWordIndex = nextIndex;
       if (reachedEnd) {
         _isPlaying = false;
-        _statusMessage = 'Fine del testo. Tocca Play per ricominciare.';
+        _statusMessage = _isHoldActive
+            ? 'Fine del testo. Rilascia HOLD per tornare indietro.'
+            : 'Fine del testo. Tocca Play per ricominciare.';
       }
     });
 
@@ -397,9 +524,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       _log(
         'pickTextFile: imported ${importedBook.name} as '
         '${importedBook.formatLabel} (${importedBook.text.length} chars), '
-        'chapters=${importedBook.chapterTexts.length}',
+        'chapters=${importedBook.chapterTexts.length}, '
+        'authors=${importedBook.authors.join(', ')}, '
+        'summaryChars=${importedBook.spoilerFreeSummary?.length ?? 0}',
       );
-      _loadBookChapters(importedBook);
       final importedWords = _tokenize(importedBook.text);
       if (importedWords.isEmpty) {
         _log('pickTextFile: tokenized empty text');
@@ -416,13 +544,25 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       _log('pickTextFile: loaded ${importedWords.length} words');
       _log('pickTextFile: auto save session after load');
 
-      final chapterCount = importedBook.chapterTexts.length;
+      final chapterCount = importedBook.chapterTexts
+          .map(_normalizeText)
+          .where((text) => text.isNotEmpty)
+          .length;
+      final sectionPluralLower = _coerceSectionLabel(
+        importedBook.sectionPluralLabel,
+        'Capitoli',
+      ).toLowerCase();
+      final authors = _coerceBookAuthors(importedBook.authors);
+      final authorsLabel = authors.isEmpty ? null : authors.join(', ');
+      final sourceLabel = _prettifySourceName(importedBook.name);
+      final loadedBookLabel = authorsLabel == null
+          ? sourceLabel
+          : '$sourceLabel di $authorsLabel';
       final loadedMessage = chapterCount > 1
-          ? 'Caricato ${importedBook.name} (${importedBook.formatLabel}) con $chapterCount capitoli.'
-          : 'Caricato ${importedBook.name} (${importedBook.formatLabel}). ${importedWords.length} parole pronte.';
-      _prepareText(message: loadedMessage, keepChapterContext: true);
+          ? 'Caricato $loadedBookLabel (${importedBook.formatLabel}) con $chapterCount $sectionPluralLower.'
+          : 'Caricato $loadedBookLabel (${importedBook.formatLabel}). ${importedWords.length} parole pronte.';
+      _loadBookChapters(importedBook, message: loadedMessage);
       _setActiveTab(_AppTab.reader, animate: false);
-      _saveCurrentSession();
     } catch (error) {
       if (!mounted) {
         return;
@@ -449,8 +589,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _draftTextController.clear();
     _chapterTexts = const [_demoText];
     _chapterTitles = const ['Demo'];
+    _sectionSingularLabel = 'Capitolo';
+    _sectionPluralLabel = 'Capitoli';
+    _chapterWordCounts = [_tokenize(_demoText).length];
     _activeChapterIndex = 0;
     _loadedFileName = null;
+    _loadedBookAuthors = const <String>[];
+    _loadedBookSummary = null;
     _loadedFormatLabel = null;
     _prepareText(
       message: 'Demo ricaricata. La lettera centrale resta ancorata al centro.',
@@ -459,32 +604,72 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _setActiveTab(_AppTab.reader, animate: false);
   }
 
-  void _loadBookChapters(ImportedBook importedBook) {
+  void _loadBookChapters(ImportedBook importedBook, {required String message}) {
+    if (_ticker.isActive) {
+      _ticker.stop();
+    }
+
     final chapters = importedBook.chapterTexts
         .map(_normalizeText)
         .where((text) => text.isNotEmpty)
         .toList();
+    final sectionSingularLabel = _coerceSectionLabel(
+      importedBook.sectionSingularLabel,
+      'Capitolo',
+    );
+    final sectionPluralLabel = _coerceSectionLabel(
+      importedBook.sectionPluralLabel,
+      'Capitoli',
+    );
     final titles = _coerceChapterTitles(
       importedBook.chapterTitles,
       chapters.isNotEmpty ? chapters.length : 1,
+      fallbackLabel: sectionSingularLabel,
     );
 
-    _chapterTexts = chapters.isNotEmpty
+    final loadedChapterTexts = chapters.isNotEmpty
         ? chapters
         : [_normalizeText(importedBook.text)];
 
-    if (_chapterTexts.isEmpty) {
-      _chapterTexts = const [''];
-    }
+    final safeChapterTexts = loadedChapterTexts.isEmpty
+        ? const ['']
+        : loadedChapterTexts;
 
-    _chapterTitles = titles.length == _chapterTexts.length
+    final chapterTitles = titles.length == safeChapterTexts.length
         ? titles
-        : _coerceChapterTitles(titles, _chapterTexts.length);
-    _activeChapterIndex = _chapterTexts.length > 1 ? 0 : 0;
-    _loadedFileName = importedBook.name;
-    _loadedFormatLabel = importedBook.formatLabel;
-    _textController.text = _chapterTexts[_activeChapterIndex];
+        : _coerceChapterTitles(
+            titles,
+            safeChapterTexts.length,
+            fallbackLabel: sectionSingularLabel,
+          );
+    final activeText = safeChapterTexts.first;
+    final words = _tokenize(activeText);
+
+    _textController.text = activeText;
     _draftTextController.clear();
+    setState(() {
+      _chapterTexts = safeChapterTexts;
+      _chapterTitles = chapterTitles;
+      _sectionSingularLabel = sectionSingularLabel;
+      _sectionPluralLabel = sectionPluralLabel;
+      _chapterWordCounts = _wordCountsForChapters(safeChapterTexts);
+      _activeChapterIndex = 0;
+      _loadedFileName = importedBook.name;
+      _loadedBookAuthors = _coerceBookAuthors(importedBook.authors);
+      _loadedBookSummary = _cleanNullableText(importedBook.spoilerFreeSummary);
+      _loadedFormatLabel = importedBook.formatLabel;
+      _words = words;
+      _currentWordIndex = 0;
+      _isPlaying = false;
+      _isHoldActive = false;
+      _statusMessage = message;
+    });
+    _log(
+      'loadBookChapters: book=$_loadedFileName, chapters=${_chapterTexts.length}, '
+      'authors=${_loadedBookAuthors.join(', ')}, '
+      'summaryChars=${_loadedBookSummary?.length ?? 0}',
+    );
+    _saveCurrentSession();
   }
 
   void _loadDraftText() {
@@ -500,8 +685,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _textController.text = normalized;
     _chapterTexts = [normalized];
     _chapterTitles = const ['Testo'];
+    _sectionSingularLabel = 'Capitolo';
+    _sectionPluralLabel = 'Capitoli';
+    _chapterWordCounts = [_tokenize(normalized).length];
     _activeChapterIndex = 0;
     _loadedFileName = 'Testo incollato';
+    _loadedBookAuthors = const <String>[];
+    _loadedBookSummary = null;
     _loadedFormatLabel = 'Testo';
     _prepareText(
       message:
@@ -524,6 +714,9 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       final normalized = _normalizeText(_textController.text);
       _chapterTexts = normalized.isEmpty ? const [''] : [normalized];
       _chapterTitles = const ['Testo'];
+      _sectionSingularLabel = 'Capitolo';
+      _sectionPluralLabel = 'Capitoli';
+      _chapterWordCounts = _wordCountsForChapters(_chapterTexts);
       _activeChapterIndex = 0;
     }
 
@@ -536,6 +729,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       _words = words;
       _currentWordIndex = startIndex;
       _isPlaying = false;
+      _isHoldActive = false;
       _statusMessage =
           message ??
           (words.isEmpty
@@ -564,7 +758,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _textController.text = _chapterTexts[targetIndex];
     final title = _chapterTitles[targetIndex];
     _prepareText(
-      message: 'Capitolo ${targetIndex + 1}: $title selezionato.',
+      message: '$_sectionSingularLabel ${targetIndex + 1}: $title selezionato.',
       initialIndex: 0,
       keepChapterContext: true,
     );
@@ -610,6 +804,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   void _togglePlayback() {
     if (_activeTab != _AppTab.reader) {
       _setActiveTab(_AppTab.reader);
+    }
+    if (_isHoldActive) {
+      _finishHoldAdvance();
+      return;
     }
     if (_isPlaying) {
       _pausePlayback();
@@ -695,32 +893,146 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     _setSpeed(nextValue);
   }
 
-  void _rewindBySeconds(int seconds) {
-    if (!_hasWords) {
+  void _jumpToPreviousReadingPoint() {
+    if (_isAtFragmentStart) {
       return;
     }
-
-    final wordsToRewind = math.max(
-      1,
-      ((_wordsPerMinute / 60) * seconds).round(),
-    );
-    final targetIndex = math.max(0, _currentWordIndex - wordsToRewind);
-    final shouldResume = _isPlaying;
 
     if (_ticker.isActive) {
       _ticker.stop();
     }
 
+    final targetIndex = _resolvePreviousReturnIndex(_words, _currentWordIndex);
+    final foundFullStop = _wordHasFullStop(_words[targetIndex]);
+
     setState(() {
       _currentWordIndex = targetIndex;
-      _isPlaying = shouldResume;
-      _statusMessage = 'Riavvolto di ${seconds}s.';
+      _isPlaying = false;
+      _isHoldActive = false;
+      _statusMessage = foundFullStop
+          ? 'Ritorno al punto precedente.'
+          : 'Ritorno di 100 parole.';
     });
 
-    if (shouldResume) {
-      _playbackStartIndex = _currentWordIndex;
-      _ticker.start();
+    _saveCurrentSession();
+  }
+
+  void _goToNextFragment() {
+    if (!_hasNextFragment) {
+      return;
     }
+
+    _selectChapter(_activeChapterIndex + 1);
+  }
+
+  void _setHoldModeEnabled(bool enabled) {
+    if (_isHoldModeEnabled == enabled) {
+      return;
+    }
+
+    if (!enabled && _isHoldActive) {
+      _finishHoldAdvance(disableHoldMode: true);
+      return;
+    }
+
+    setState(() {
+      _isHoldModeEnabled = enabled;
+      _statusMessage = enabled ? 'HOLD pronto.' : 'HOLD disattivato.';
+    });
+  }
+
+  void _startHoldAdvance() {
+    if (!_isHoldModeEnabled || _isHoldActive) {
+      return;
+    }
+
+    if (!_hasWords) {
+      _prepareText();
+      return;
+    }
+
+    if (_currentWordIndex >= _words.length - 1) {
+      setState(() {
+        _statusMessage = 'Fine del testo. HOLD non puo avanzare oltre.';
+      });
+      return;
+    }
+
+    if (_ticker.isActive) {
+      _ticker.stop();
+    }
+
+    _playbackStartIndex = _currentWordIndex;
+    _ticker.start();
+
+    setState(() {
+      _isHoldActive = true;
+      _isPlaying = true;
+      _statusMessage = 'HOLD attivo a ${_wordsPerMinute.round()} WPM.';
+    });
+  }
+
+  void _handleHoldPointerDown(PointerDownEvent event) {
+    if (_holdPointer != null) {
+      return;
+    }
+
+    _holdPointer = event.pointer;
+    _startHoldAdvance();
+    if (!_isHoldActive) {
+      _holdPointer = null;
+    }
+  }
+
+  void _handleHoldPointerUp(PointerUpEvent event) {
+    if (_holdPointer != event.pointer) {
+      return;
+    }
+
+    _holdPointer = null;
+    _finishHoldAdvance();
+  }
+
+  void _handleHoldPointerCancel(PointerCancelEvent event) {
+    if (_holdPointer != event.pointer) {
+      return;
+    }
+
+    _holdPointer = null;
+    _finishHoldAdvance();
+  }
+
+  void _finishHoldAdvance({bool disableHoldMode = false}) {
+    _holdPointer = null;
+
+    if (!_isHoldActive) {
+      if (disableHoldMode && _isHoldModeEnabled) {
+        setState(() {
+          _isHoldModeEnabled = false;
+          _statusMessage = 'HOLD disattivato.';
+        });
+      }
+      return;
+    }
+
+    if (_ticker.isActive) {
+      _ticker.stop();
+    }
+
+    final returnIndex = _resolveHoldReturnIndex(_words, _currentWordIndex);
+    final foundFullStop = _wordHasFullStop(_words[returnIndex]);
+
+    setState(() {
+      _currentWordIndex = returnIndex;
+      _isPlaying = false;
+      _isHoldActive = false;
+      if (disableHoldMode) {
+        _isHoldModeEnabled = false;
+      }
+      _statusMessage = foundFullStop
+          ? 'HOLD: ritorno all\'ultimo punto fermo.'
+          : 'HOLD: ritorno di 100 parole.';
+    });
 
     _saveCurrentSession();
   }
@@ -870,68 +1182,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     );
   }
 
-  Future<void> _openChapterSheet() async {
-    if (_chapterTexts.length <= 1) {
-      return;
-    }
-
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) {
-        final textTheme = Theme.of(sheetContext).textTheme;
-        return _buildSheetFrame(
-          context: sheetContext,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Capitoli',
-                style: textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.9,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Salta subito in un altro punto del libro. Le statistiche restano riferite al capitolo attivo.',
-                style: textTheme.bodyLarge?.copyWith(
-                  color: _muted,
-                  height: 1.45,
-                ),
-              ),
-              const SizedBox(height: 16),
-              ..._chapterTitles.asMap().entries.map((entry) {
-                final index = entry.key;
-                final isSelected = index == _activeChapterIndex;
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _QuickActionTile(
-                    icon: isSelected
-                        ? Icons.radio_button_checked_rounded
-                        : Icons.menu_book_rounded,
-                    title: '${index + 1}. ${entry.value}',
-                    subtitle: isSelected
-                        ? 'Capitolo attivo'
-                        : 'Apri questo capitolo nel reader',
-                    selected: isSelected,
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      _selectChapter(index);
-                      _setActiveTab(_AppTab.reader);
-                    },
-                  ),
-                );
-              }),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
   Widget _buildSheetFrame({
     required BuildContext context,
     required Widget child,
@@ -996,7 +1246,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   }
 
   Widget _buildBottomPlayerNavigation(BuildContext context) {
-    final isPlayerMode = _isPlaying;
     final showSpeedBar = _activeTab == _AppTab.reader;
 
     return SafeArea(
@@ -1044,7 +1293,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                     child: SlideTransition(position: offset, child: child),
                   );
                 },
-                child: isPlayerMode
+                child: _activeTab == _AppTab.reader
                     ? _buildActivePlayerBar(context)
                     : _buildIdleNavigationBar(context),
               ),
@@ -1059,12 +1308,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return Row(
       key: const ValueKey('bottom-nav-idle'),
       children: [
-        Expanded(
-          child: _buildIdleNavButton(
-            tab: _AppTab.home,
-            icon: Icons.home_rounded,
-          ),
-        ),
+        Expanded(child: _buildIdleHomeButton()),
         const SizedBox(width: 10),
         Expanded(child: _buildIdleReaderTriggerButton()),
         const SizedBox(width: 10),
@@ -1078,7 +1322,73 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildIdleHomeButton() {
+    if (_activeTab != _AppTab.home) {
+      return _buildIdleNavButton(tab: _AppTab.home, icon: Icons.home_rounded);
+    }
+
+    return SizedBox(
+      key: const ValueKey('home-upload-action'),
+      height: 54,
+      child: AnimatedBuilder(
+        animation: _readerPlayHintController,
+        builder: (context, child) {
+          final cycle = _readerPlayHintController.value;
+          final pulsePhase = (math.sin(cycle * math.pi * 2) + 1) / 2;
+          final pulse = 1 + (0.07 * pulsePhase);
+          const borderRadius = BorderRadius.all(Radius.circular(22));
+
+          return Transform.scale(
+            scale: pulse,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [_accent, _accentDeep],
+                ),
+                borderRadius: borderRadius,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.28)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x3AE4542D),
+                    blurRadius: 28,
+                    offset: Offset(0, 14),
+                  ),
+                ],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: Tooltip(
+                  message: 'Aggiungi contenuto',
+                  child: InkWell(
+                    borderRadius: borderRadius,
+                    onTap: _openAddContentSheet,
+                    child: const Center(
+                      child: Icon(
+                        Icons.upload_file_rounded,
+                        size: 31,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildIdleReaderTriggerButton() {
+    if (_activeTab == _AppTab.reader && _isHoldModeEnabled) {
+      final canHold = _hasWords && (!_isPlaying || _isHoldActive);
+      return _buildHoldAdvanceButton(context, enabled: canHold);
+    }
+
     return SizedBox(
       height: 54,
       child: AnimatedBuilder(
@@ -1205,44 +1515,100 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
               compact: true,
             ),
           ),
+          const SizedBox(width: 8),
+          _buildHoldModeToggleButton(context),
         ],
       ),
     );
   }
 
+  Widget _buildHoldModeToggleButton(BuildContext context) {
+    final canToggle = !_isPlaying || _isHoldActive;
+    final isSelected = _isHoldModeEnabled;
+
+    return SizedBox(
+      width: 78,
+      height: 30,
+      child: FilledButton(
+        onPressed: canToggle
+            ? () => _setHoldModeEnabled(!_isHoldModeEnabled)
+            : null,
+        style: FilledButton.styleFrom(
+          elevation: 0,
+          backgroundColor: isSelected
+              ? _accent
+              : Colors.white.withValues(alpha: 0.12),
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: Colors.white.withValues(alpha: 0.06),
+          disabledForegroundColor: Colors.white.withValues(alpha: 0.34),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(
+              color: isSelected
+                  ? Colors.white.withValues(alpha: 0.28)
+                  : Colors.white.withValues(alpha: 0.14),
+            ),
+          ),
+          padding: EdgeInsets.zero,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isSelected ? Icons.touch_app_rounded : Icons.pan_tool_rounded,
+              size: 16,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              'HOLD',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildActivePlayerBar(BuildContext context) {
+    final showNext = _isAtFragmentEnd;
+
     return Row(
+      key: const ValueKey('reader-controls'),
       children: [
         Expanded(
           child: _buildPlayerModeButton(
-            icon: Icons.replay_10_rounded,
-            onPressed: _hasWords ? () => _rewindBySeconds(10) : null,
-            tooltip: 'Torna indietro di 10 secondi',
+            icon: Icons.skip_previous_rounded,
+            onPressed: _isAtFragmentStart ? null : _jumpToPreviousReadingPoint,
+            tooltip: 'Torna al punto precedente',
           ),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: SizedBox(
-            height: 56,
-            child: FilledButton(
-              onPressed: _togglePlayback,
-              style: FilledButton.styleFrom(
-                elevation: 0,
-                backgroundColor: Colors.white,
-                foregroundColor: _ink,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-              ),
-              child: Icon(
-                _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                size: 28,
-              ),
-            ),
-          ),
+          child: _isHoldModeEnabled
+              ? _buildHoldAdvanceButton(
+                  context,
+                  enabled:
+                      _hasWords &&
+                      !_isAtFragmentEnd &&
+                      (!_isPlaying || _isHoldActive),
+                )
+              : _buildReaderPlayButton(context),
         ),
         const SizedBox(width: 10),
-        Expanded(child: _buildPlayerModePlaceholder()),
+        Expanded(
+          child: _buildPlayerModeButton(
+            icon: showNext ? Icons.skip_next_rounded : Icons.menu_book_rounded,
+            onPressed: showNext
+                ? (_hasNextFragment ? _goToNextFragment : null)
+                : () => _navigateToTab(_AppTab.settings),
+            tooltip: showNext ? 'Prossimo frammento' : 'Apri libro',
+            highlighted: showNext && _hasNextFragment,
+          ),
+        ),
       ],
     );
   }
@@ -1252,6 +1618,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     required VoidCallback? onPressed,
     required String tooltip,
     bool compact = false,
+    bool highlighted = false,
   }) {
     return SizedBox(
       height: compact ? 30 : 56,
@@ -1261,13 +1628,19 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
           onPressed: onPressed,
           style: FilledButton.styleFrom(
             elevation: 0,
-            backgroundColor: Colors.white.withValues(alpha: 0.12),
+            backgroundColor: highlighted
+                ? _accent
+                : Colors.white.withValues(alpha: 0.12),
             foregroundColor: Colors.white,
             disabledBackgroundColor: Colors.white.withValues(alpha: 0.06),
             disabledForegroundColor: Colors.white.withValues(alpha: 0.35),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(compact ? 14 : 20),
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
+              side: BorderSide(
+                color: highlighted
+                    ? Colors.white.withValues(alpha: 0.32)
+                    : Colors.white.withValues(alpha: 0.14),
+              ),
             ),
             padding: EdgeInsets.zero,
           ),
@@ -1277,14 +1650,35 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildPlayerModePlaceholder() {
+  Widget _buildReaderPlayButton(BuildContext context) {
+    final highlight = _showReaderPlayTrigger;
+    final borderRadius = BorderRadius.circular(highlight ? 22 : 20);
+
     return SizedBox(
       height: 56,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+      child: FilledButton(
+        onPressed: _hasWords ? _togglePlayback : null,
+        style: FilledButton.styleFrom(
+          elevation: 0,
+          backgroundColor: highlight
+              ? _accent
+              : Colors.white.withValues(alpha: 0.12),
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: Colors.white.withValues(alpha: 0.06),
+          disabledForegroundColor: Colors.white.withValues(alpha: 0.35),
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadius,
+            side: BorderSide(
+              color: highlight
+                  ? Colors.white.withValues(alpha: 0.32)
+                  : Colors.white.withValues(alpha: 0.14),
+            ),
+          ),
+          padding: EdgeInsets.zero,
+        ),
+        child: Icon(
+          _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          size: highlight ? 31 : 28,
         ),
       ),
     );
@@ -1292,6 +1686,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   Widget _buildHomeTab(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
+    final authorLabel = _activeAuthorLabel;
+    final summary = _activeBookSummary;
     final brandStyle =
         (compact ? textTheme.headlineMedium : textTheme.displaySmall)?.copyWith(
           fontWeight: FontWeight.w900,
@@ -1382,34 +1778,50 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Ultimo Libro',
-                                style: textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: -0.6,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              Text(
                                 _activeSourceLabel,
-                                maxLines: 1,
+                                maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: textTheme.headlineSmall?.copyWith(
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: -0.8,
                                 ),
                               ),
-                              const Spacer(),
+                              if (authorLabel != null) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  'di $authorLabel',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.titleSmall?.copyWith(
+                                    color: _ink,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ],
+                              if (summary != null) ...[
+                                SizedBox(height: compact ? 16 : 20),
+                                _HomeSummaryText(
+                                  summary: summary,
+                                  style: textTheme.bodyLarge?.copyWith(
+                                    color: _ink.withValues(alpha: 0.78),
+                                    height: 1.42,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                              ] else
+                                const Spacer(),
                               Wrap(
                                 spacing: 10,
                                 runSpacing: 10,
                                 children: [
                                   _InlineStatPill(
-                                    label: 'Capitolo',
+                                    label: _sectionSingularLabel,
                                     value: _chapterProgressLabel,
                                   ),
                                   _InlineStatPill(
                                     label: 'ETA',
-                                    value: _etaLabel,
+                                    value: _remainingChaptersEtaLabel,
                                   ),
                                 ],
                               ),
@@ -1418,23 +1830,6 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                         ),
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _openAddContentSheet,
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(58),
-                      backgroundColor: _accent,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(22),
-                      ),
-                    ),
-                    icon: const Icon(Icons.add_circle_outline_rounded),
-                    label: const Text('Aggiungi contenuto'),
                   ),
                 ),
               ],
@@ -1447,6 +1842,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   Widget _buildReaderTab(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
+    final authorLabel = _activeAuthorLabel;
     return KeyedSubtree(
       key: const ValueKey('reader-tab'),
       child: Padding(
@@ -1474,14 +1870,18 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                                 letterSpacing: -0.8,
                               ),
                             ),
-                            const SizedBox(height: 3),
-                            Text(
-                              _hasImportedSource ? 'Libro attivo' : 'Demo',
-                              style: textTheme.bodyMedium?.copyWith(
-                                color: _muted,
-                                fontWeight: FontWeight.w700,
+                            if (authorLabel != null) ...[
+                              const SizedBox(height: 3),
+                              Text(
+                                authorLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: textTheme.bodyMedium?.copyWith(
+                                  color: _muted,
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
-                            ),
+                            ],
                           ],
                         ),
                       ),
@@ -1532,96 +1932,81 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                   ),
                 ),
                 const SizedBox(height: 14),
-                InkWell(
-                  borderRadius: BorderRadius.circular(30),
-                  onTap: _chapterTexts.length > 1 ? _openChapterSheet : null,
-                  child: DecoratedBox(
-                    decoration: _panelDecoration(radius: 30),
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        compact ? 18 : 20,
-                        compact ? 16 : 18,
-                        compact ? 18 : 20,
-                        compact ? 14 : 16,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
+                DecoratedBox(
+                  decoration: _panelDecoration(radius: 30),
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      compact ? 18 : 20,
+                      compact ? 16 : 18,
+                      compact ? 18 : 20,
+                      compact ? 14 : 16,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$_sectionSingularLabel attivo',
+                          style: textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          width: double.infinity,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: compact ? 10 : 12,
+                            vertical: compact ? 14 : 16,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _surfaceWarm,
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(color: _panelBorder),
+                          ),
+                          child: Row(
                             children: [
-                              Text(
-                                'Capitolo attivo',
-                                style: textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: -0.5,
+                              Expanded(
+                                child: _ReaderStatColumn(
+                                  label: _sectionSingularLabel,
+                                  value: _chapterProgressLabel,
                                 ),
                               ),
-                              const Spacer(),
-                              if (_chapterTexts.length > 1)
-                                Icon(
-                                  Icons.menu_book_rounded,
-                                  size: 20,
-                                  color: _accent,
+                              Container(
+                                width: 1,
+                                height: compact ? 46 : 52,
+                                color: _panelBorder,
+                              ),
+                              Expanded(
+                                child: _ReaderStatColumn(
+                                  label: 'WPM',
+                                  value: '${_wordsPerMinute.round()}',
+                                  highlight: true,
                                 ),
+                              ),
+                              Container(
+                                width: 1,
+                                height: compact ? 46 : 52,
+                                color: _panelBorder,
+                              ),
+                              Expanded(
+                                child: _ReaderStatColumn(
+                                  label: 'ETA',
+                                  value: _etaLabel,
+                                ),
+                              ),
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          Container(
-                            width: double.infinity,
-                            padding: EdgeInsets.symmetric(
-                              horizontal: compact ? 10 : 12,
-                              vertical: compact ? 14 : 16,
-                            ),
-                            decoration: BoxDecoration(
-                              color: _surfaceWarm,
-                              borderRadius: BorderRadius.circular(22),
-                              border: Border.all(color: _panelBorder),
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: _ReaderStatColumn(
-                                    label: 'Capitolo',
-                                    value: _chapterProgressLabel,
-                                  ),
-                                ),
-                                Container(
-                                  width: 1,
-                                  height: compact ? 46 : 52,
-                                  color: _panelBorder,
-                                ),
-                                Expanded(
-                                  child: _ReaderStatColumn(
-                                    label: 'WPM',
-                                    value: '${_wordsPerMinute.round()}',
-                                    highlight: true,
-                                  ),
-                                ),
-                                Container(
-                                  width: 1,
-                                  height: compact ? 46 : 52,
-                                  color: _panelBorder,
-                                ),
-                                Expanded(
-                                  child: _ReaderStatColumn(
-                                    label: 'ETA',
-                                    value: _etaLabel,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Slider(
-                            min: 120,
-                            max: 900,
-                            divisions: 39,
-                            value: _wordsPerMinute,
-                            label: '${_wordsPerMinute.round()}',
-                            onChanged: _setSpeed,
-                          ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(height: 10),
+                        Slider(
+                          min: 120,
+                          max: 900,
+                          divisions: 39,
+                          value: _wordsPerMinute,
+                          label: '${_wordsPerMinute.round()}',
+                          onChanged: _setSpeed,
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -1633,8 +2018,65 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildHoldAdvanceButton(
+    BuildContext context, {
+    required bool enabled,
+  }) {
+    final isActive = _isHoldActive;
+    final borderRadius = BorderRadius.circular(16);
+    final foregroundColor = enabled
+        ? Colors.white
+        : Colors.white.withValues(alpha: 0.58);
+
+    return SizedBox(
+      key: const ValueKey('hold-advance-button'),
+      height: 54,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: enabled
+              ? (isActive ? _accentDeep : _accent)
+              : _track.withValues(alpha: 0.72),
+          borderRadius: borderRadius,
+          border: Border.all(
+            color: enabled ? Colors.white.withValues(alpha: 0.3) : _panelBorder,
+          ),
+          boxShadow: isActive
+              ? const [
+                  BoxShadow(
+                    color: Color(0x2EE4542D),
+                    blurRadius: 18,
+                    offset: Offset(0, 9),
+                  ),
+                ]
+              : null,
+        ),
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: enabled ? _handleHoldPointerDown : null,
+          onPointerUp: enabled ? _handleHoldPointerUp : null,
+          onPointerCancel: enabled ? _handleHoldPointerCancel : null,
+          child: MouseRegion(
+            cursor: enabled
+                ? SystemMouseCursors.click
+                : SystemMouseCursors.basic,
+            child: Center(
+              child: Icon(
+                Icons.keyboard_double_arrow_right_rounded,
+                size: isActive ? 34 : 32,
+                color: foregroundColor,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSettingsTab(BuildContext context, {required bool compact}) {
     final textTheme = Theme.of(context).textTheme;
+    final groups = _buildSectionGroups();
 
     return KeyedSubtree(
       key: const ValueKey('settings-tab'),
@@ -1654,32 +2096,93 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Indice',
+                          'Libro',
                           style: textTheme.headlineSmall?.copyWith(
                             fontWeight: FontWeight.w900,
                             letterSpacing: -0.9,
                           ),
                         ),
-                        const SizedBox(height: 12),
-                        ..._chapterTitles.asMap().entries.map((entry) {
-                          final index = entry.key;
-                          final isSelected = index == _activeChapterIndex;
+                        const SizedBox(height: 6),
+                        Text(
+                          '${_chapterTexts.length} ${_sectionPluralLabel.toLowerCase()}',
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: _muted,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        ...groups.map((group) {
+                          final isGroupActive = group.entries.any(
+                            (entry) => entry.index == _activeChapterIndex,
+                          );
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 10),
-                            child: _QuickActionTile(
-                              icon: isSelected
-                                  ? Icons.radio_button_checked_rounded
-                                  : Icons.menu_book_rounded,
-                              title:
-                                  '${index + 1}. ${_compactChapterLabel(entry.value)}',
-                              subtitle: isSelected
-                                  ? 'Capitolo attivo'
-                                  : 'Apri questo capitolo nel reader',
-                              selected: isSelected,
-                              onTap: () {
-                                _selectChapter(index);
-                                _navigateToTab(_AppTab.reader);
-                              },
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: isGroupActive ? _accentSoft : _panel,
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: isGroupActive ? _accent : _panelBorder,
+                                ),
+                              ),
+                              child: ExpansionTile(
+                                initiallyExpanded:
+                                    isGroupActive || groups.length == 1,
+                                tilePadding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 4,
+                                ),
+                                childrenPadding: const EdgeInsets.fromLTRB(
+                                  12,
+                                  0,
+                                  12,
+                                  12,
+                                ),
+                                leading: Icon(
+                                  isGroupActive
+                                      ? Icons.radio_button_checked_rounded
+                                      : Icons.auto_stories_rounded,
+                                  color: isGroupActive ? _accent : _muted,
+                                ),
+                                title: Text(
+                                  group.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: -0.4,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  '${group.entries.length} ${_sectionPluralLabel.toLowerCase()}',
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: _muted,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                children: group.entries.map((entry) {
+                                  final isSelected =
+                                      entry.index == _activeChapterIndex;
+                                  return Padding(
+                                    padding: const EdgeInsets.only(top: 8),
+                                    child: _QuickActionTile(
+                                      icon: isSelected
+                                          ? Icons.radio_button_checked_rounded
+                                          : Icons.notes_rounded,
+                                      title:
+                                          '${entry.index + 1}. ${_compactChapterLabel(entry.title)}',
+                                      subtitle: isSelected
+                                          ? '$_sectionSingularLabel attivo'
+                                          : 'Apri questo $_sectionSingularLower nel reader',
+                                      selected: isSelected,
+                                      onTap: () {
+                                        _selectChapter(entry.index);
+                                        _navigateToTab(_AppTab.reader);
+                                      },
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
                             ),
                           );
                         }),
@@ -1694,6 +2197,81 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       ),
     );
   }
+
+  List<_SectionGroup> _buildSectionGroups() {
+    if (_chapterTitles.isEmpty) {
+      return const <_SectionGroup>[];
+    }
+
+    if (_sectionSingularLabel != 'Frammento') {
+      return [
+        _SectionGroup(
+          title: 'Capitoli',
+          entries: [
+            for (final entry in _chapterTitles.asMap().entries)
+              _SectionEntry(index: entry.key, title: entry.value),
+          ],
+        ),
+      ];
+    }
+
+    final groups = <_SectionGroup>[];
+    var currentTitle = '';
+    var currentEntries = <_SectionEntry>[];
+
+    for (final entry in _chapterTitles.asMap().entries) {
+      final split = _splitGroupedSectionTitle(entry.value);
+      final groupTitle = split.groupTitle;
+      if (currentEntries.isNotEmpty && currentTitle != groupTitle) {
+        groups.add(_SectionGroup(title: currentTitle, entries: currentEntries));
+        currentEntries = <_SectionEntry>[];
+      }
+      currentTitle = groupTitle;
+      currentEntries.add(_SectionEntry(index: entry.key, title: split.title));
+    }
+
+    if (currentEntries.isNotEmpty) {
+      groups.add(_SectionGroup(title: currentTitle, entries: currentEntries));
+    }
+
+    return groups;
+  }
+}
+
+class _SectionGroup {
+  const _SectionGroup({required this.title, required this.entries});
+
+  final String title;
+  final List<_SectionEntry> entries;
+}
+
+class _SectionEntry {
+  const _SectionEntry({required this.index, required this.title});
+
+  final int index;
+  final String title;
+}
+
+class _GroupedSectionTitle {
+  const _GroupedSectionTitle({required this.groupTitle, required this.title});
+
+  final String groupTitle;
+  final String title;
+}
+
+_GroupedSectionTitle _splitGroupedSectionTitle(String value) {
+  final normalized = value.trim();
+  final separatorIndex = normalized.indexOf(' - ');
+  if (separatorIndex == -1) {
+    return _GroupedSectionTitle(groupTitle: 'Libro', title: normalized);
+  }
+
+  final groupTitle = normalized.substring(0, separatorIndex).trim();
+  final title = normalized.substring(separatorIndex + 3).trim();
+  return _GroupedSectionTitle(
+    groupTitle: groupTitle.isEmpty ? 'Libro' : groupTitle,
+    title: title.isEmpty ? normalized : title,
+  );
 }
 
 class _ReaderStatColumn extends StatelessWidget {
@@ -1853,6 +2431,42 @@ class _InlineStatPill extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _HomeSummaryText extends StatelessWidget {
+  const _HomeSummaryText({required this.summary, required this.style});
+
+  final String summary;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
+    final fontSize = effectiveStyle.fontSize ?? 16;
+    final height = effectiveStyle.height ?? 1.0;
+    final lineHeight = math.max(1.0, fontSize * height);
+
+    return Expanded(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final availableHeight = constraints.maxHeight.isFinite
+              ? constraints.maxHeight
+              : lineHeight * 8;
+          final maxLines = math.max(1, (availableHeight / lineHeight).floor());
+
+          return Align(
+            alignment: Alignment.topLeft,
+            child: Text(
+              summary,
+              maxLines: maxLines,
+              overflow: TextOverflow.ellipsis,
+              style: effectiveStyle,
+            ),
+          );
+        },
       ),
     );
   }
@@ -2049,6 +2663,35 @@ List<String> _tokenize(String source) {
       .where((word) => word.isNotEmpty)
       .toList(growable: false);
 }
+
+int _resolveHoldReturnIndex(List<String> words, int currentIndex) {
+  if (words.isEmpty) {
+    return 0;
+  }
+
+  final safeIndex = currentIndex.clamp(0, words.length - 1).toInt();
+  final lowerBound = math.max(0, safeIndex - _holdLookbackWords);
+  for (var index = safeIndex; index >= lowerBound; index -= 1) {
+    if (_wordHasFullStop(words[index])) {
+      return index;
+    }
+  }
+  return lowerBound;
+}
+
+int _resolvePreviousReturnIndex(List<String> words, int currentIndex) {
+  if (words.isEmpty) {
+    return 0;
+  }
+
+  final safeIndex = currentIndex.clamp(0, words.length - 1).toInt();
+  if (safeIndex <= 0) {
+    return 0;
+  }
+  return _resolveHoldReturnIndex(words, safeIndex - 1);
+}
+
+bool _wordHasFullStop(String word) => word.contains('.');
 
 BoxDecoration _panelDecoration({required double radius}) {
   return BoxDecoration(

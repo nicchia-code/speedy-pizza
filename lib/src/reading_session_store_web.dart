@@ -3,7 +3,7 @@ import 'dart:html' as html;
 
 import 'reading_session_store_base.dart';
 
-const _sessionStorageKey = 'speedy_reader_session_v1';
+const _sessionStorageKey = 'speedy_reader_session_v2';
 
 ReadingSessionStore createPlatformReadingSessionStore() =>
     const _WebReadingSessionStore();
