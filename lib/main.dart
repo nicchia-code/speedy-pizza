@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
@@ -27,6 +29,24 @@ const _holdLookbackWords = 100;
 const _defaultBookAssetPath =
     'assets/books/alice_nel_paese_delle_meraviglie.pb';
 const _defaultBookFileName = 'Alice_nel_paese_delle_meraviglie.pb';
+const _rabbitInputEventChannel = EventChannel('speedy_pizza/rabbit_input');
+const _rabbitSideButtonKeyCodes = <int>{
+  27, // KEYCODE_CAMERA
+  62, // KEYCODE_SPACE, useful for local/dev keyboards.
+  66, // KEYCODE_ENTER, useful for local/dev keyboards.
+  79, // KEYCODE_HEADSETHOOK
+  188, // KEYCODE_BUTTON_1
+  219, // KEYCODE_ASSIST
+  231, // KEYCODE_VOICE_ASSIST
+  264, // KEYCODE_STEM_PRIMARY
+};
+const _rabbitPlayPauseKeyCodes = <int>{
+  85, // KEYCODE_MEDIA_PLAY_PAUSE
+  126, // KEYCODE_MEDIA_PLAY
+  127, // KEYCODE_MEDIA_PAUSE
+};
+const _rabbitNextKeyCodes = <int>{87}; // KEYCODE_MEDIA_NEXT
+const _rabbitPreviousKeyCodes = <int>{88}; // KEYCODE_MEDIA_PREVIOUS
 
 const _legacyDemoText = '''
 Leggere veloce non vuol dire correre a caso.
@@ -120,6 +140,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   late final Ticker _ticker;
   late final AnimationController _readerPlayHintController;
   late final PageController _pageController;
+  final FocusNode _rabbitInputFocusNode = FocusNode(
+    debugLabel: 'Rabbit hardware controls',
+  );
+  StreamSubscription<dynamic>? _rabbitInputSubscription;
 
   List<String> _words = const [];
   List<String> _chapterTexts = const [];
@@ -136,6 +160,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   bool _isHoldActive = false;
   int? _holdPointer;
   int _contentLoadGeneration = 0;
+  bool _isRabbitLayoutActive = false;
+  bool _isRabbitSideButtonDown = false;
   _AppTab _activeTab = _AppTab.home;
   String? _loadedFileName;
   List<String> _loadedBookAuthors = const <String>[];
@@ -293,6 +319,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     )..repeat();
     _pageController = PageController(initialPage: _tabToIndex(_activeTab));
     _log('initState: reader ready');
+    _listenToRabbitInput();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _rabbitInputFocusNode.requestFocus();
+    });
     _restoreSession();
   }
 
@@ -302,9 +335,231 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
   }
 
+  void _listenToRabbitInput() {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    _rabbitInputSubscription = _rabbitInputEventChannel
+        .receiveBroadcastStream()
+        .listen(
+          _handleRabbitInputEvent,
+          onError: (Object error) {
+            _log('rabbitInput: channel error $error');
+          },
+        );
+  }
+
+  void _handleRabbitInputEvent(Object? rawEvent) {
+    if (rawEvent is! Map) {
+      _log('rabbitInput: ignored non-map event $rawEvent');
+      return;
+    }
+
+    final type = rawEvent['type'];
+    if (type == 'key') {
+      _handleRabbitKeyInput(rawEvent);
+      return;
+    }
+    if (type == 'motion') {
+      _handleRabbitMotionInput(rawEvent);
+    }
+  }
+
+  void _handleRabbitKeyInput(Map<dynamic, dynamic> event) {
+    final keyCode = _eventInt(event, 'keyCode');
+    final action = _eventInt(event, 'action');
+    final repeatCount = _eventInt(event, 'repeatCount') ?? 0;
+    if (keyCode == null || action == null) {
+      return;
+    }
+
+    _log(
+      'rabbitInput:key code=$keyCode action=$action '
+      'scan=${_eventInt(event, 'scanCode')} source=${_eventInt(event, 'source')}',
+    );
+
+    if (_rabbitSideButtonKeyCodes.contains(keyCode)) {
+      if (action == 0 && repeatCount == 0) {
+        _handleRabbitSideButtonDown();
+      } else if (action == 1) {
+        _handleRabbitSideButtonUp();
+      }
+      return;
+    }
+
+    if (action != 1) {
+      return;
+    }
+
+    if (_rabbitNextKeyCodes.contains(keyCode)) {
+      _handleRabbitNextAction();
+      return;
+    }
+    if (_rabbitPreviousKeyCodes.contains(keyCode)) {
+      _handleRabbitPreviousAction();
+      return;
+    }
+    if (_rabbitPlayPauseKeyCodes.contains(keyCode)) {
+      _togglePlayback();
+    }
+  }
+
+  void _handleRabbitMotionInput(Map<dynamic, dynamic> event) {
+    final scroll =
+        _eventDouble(event, 'axisScroll') ??
+        _eventDouble(event, 'axisVScroll') ??
+        _eventDouble(event, 'axisHScroll') ??
+        0;
+    if (scroll.abs() < 0.01) {
+      return;
+    }
+
+    _log(
+      'rabbitInput:wheel delta=$scroll source=${_eventInt(event, 'source')}',
+    );
+    _handleRabbitWheel(scroll);
+  }
+
+  void _handleRabbitKeyboardEvent(KeyEvent event) {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return;
+    }
+
+    final isPress = event is KeyDownEvent && event is! KeyRepeatEvent;
+    final isRelease = event is KeyUpEvent;
+    final isRepeatedPress = event is KeyRepeatEvent;
+    final key = event.logicalKey;
+
+    if (key == LogicalKeyboardKey.space || key == LogicalKeyboardKey.enter) {
+      if (isPress) {
+        _handleRabbitSideButtonDown();
+      } else if (isRelease) {
+        _handleRabbitSideButtonUp();
+      }
+      return;
+    }
+
+    if (!isPress && !isRepeatedPress) {
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      _handleRabbitWheel(1);
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      _handleRabbitWheel(-1);
+    } else if (key == LogicalKeyboardKey.arrowLeft) {
+      _handleRabbitPreviousAction();
+    } else if (key == LogicalKeyboardKey.arrowRight) {
+      _handleRabbitNextAction();
+    }
+  }
+
+  void _handleRabbitPointerSignal(PointerSignalEvent event) {
+    if (defaultTargetPlatform == TargetPlatform.android ||
+        event is! PointerScrollEvent ||
+        _activeTab != _AppTab.reader) {
+      return;
+    }
+
+    if (event.scrollDelta.dy == 0) {
+      return;
+    }
+    _handleRabbitWheel(event.scrollDelta.dy < 0 ? 1 : -1);
+  }
+
+  void _handleRabbitSideButtonDown() {
+    if (_isRabbitSideButtonDown) {
+      return;
+    }
+    _isRabbitSideButtonDown = true;
+
+    if (_activeTab == _AppTab.settings) {
+      _navigateToTab(_AppTab.reader);
+      return;
+    }
+
+    if (_isAtFragmentEnd) {
+      return;
+    }
+
+    if (_isHoldModeEnabled) {
+      _startHoldAdvance();
+    }
+  }
+
+  void _handleRabbitSideButtonUp() {
+    if (!_isRabbitSideButtonDown) {
+      return;
+    }
+    _isRabbitSideButtonDown = false;
+
+    if (_isAtFragmentEnd) {
+      _handleRabbitNextAction();
+      return;
+    }
+
+    if (_isHoldActive) {
+      _finishHoldAdvance();
+      return;
+    }
+
+    if (!_isHoldModeEnabled) {
+      _togglePlayback();
+    }
+  }
+
+  void _handleRabbitWheel(double delta) {
+    if (_activeTab != _AppTab.reader) {
+      return;
+    }
+    _adjustSpeedBy(delta > 0 ? 20 : -20);
+  }
+
+  void _handleRabbitPreviousAction() {
+    if (!_isAtFragmentStart) {
+      _jumpToPreviousReadingPoint();
+    }
+  }
+
+  void _handleRabbitNextAction() {
+    if (_isAtFragmentEnd && _hasNextFragment) {
+      _goToNextFragment();
+      return;
+    }
+
+    if (_activeTab != _AppTab.settings) {
+      _navigateToTab(_AppTab.settings);
+    }
+  }
+
+  int? _eventInt(Map<dynamic, dynamic> event, String key) {
+    final value = event[key];
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return null;
+  }
+
+  double? _eventDouble(Map<dynamic, dynamic> event, String key) {
+    final value = event[key];
+    if (value is double) {
+      return value;
+    }
+    if (value is num) {
+      return value.toDouble();
+    }
+    return null;
+  }
+
   @override
   void dispose() {
     _saveCurrentSession();
+    _rabbitInputSubscription?.cancel();
+    _rabbitInputFocusNode.dispose();
     _ticker.dispose();
     _readerPlayHintController.dispose();
     _pageController.dispose();
@@ -903,6 +1158,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   }
 
   void _syncPageToTab(_AppTab tab, {bool animate = true}) {
+    if (_isRabbitLayoutActive) {
+      return;
+    }
+
     if (!_pageController.hasClients) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
@@ -1277,42 +1536,408 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      extendBody: true,
-      bottomNavigationBar: _buildBottomPlayerNavigation(context),
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [_bgTop, _bgBottom],
-          ),
-        ),
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final isCompact = constraints.maxWidth < 760;
-              return PageView(
-                controller: _pageController,
-                physics: const BouncingScrollPhysics(),
-                onPageChanged: (index) {
-                  final tab = _indexToTab(index);
-                  if (tab == _activeTab) {
-                    return;
+    final useRabbitLayout = _shouldUseRabbitLayout(MediaQuery.sizeOf(context));
+    _isRabbitLayoutActive = useRabbitLayout;
+
+    return KeyboardListener(
+      focusNode: _rabbitInputFocusNode,
+      autofocus: true,
+      onKeyEvent: _handleRabbitKeyboardEvent,
+      child: Listener(
+        onPointerSignal: _handleRabbitPointerSignal,
+        child: Scaffold(
+          extendBody: !useRabbitLayout,
+          bottomNavigationBar: useRabbitLayout
+              ? null
+              : _buildBottomPlayerNavigation(context),
+          body: DecoratedBox(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [_bgTop, _bgBottom],
+              ),
+            ),
+            child: SafeArea(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final isCompact = constraints.maxWidth < 760;
+                  if (useRabbitLayout) {
+                    return _buildRabbitBody(context, compact: isCompact);
                   }
-                  setState(() {
-                    _activeTab = tab;
-                  });
+
+                  return PageView(
+                    controller: _pageController,
+                    physics: const BouncingScrollPhysics(),
+                    onPageChanged: (index) {
+                      final tab = _indexToTab(index);
+                      if (tab == _activeTab) {
+                        return;
+                      }
+                      setState(() {
+                        _activeTab = tab;
+                      });
+                    },
+                    children: [
+                      _buildHomeTab(context, compact: isCompact),
+                      _buildReaderTab(context, compact: isCompact),
+                      _buildSettingsTab(context, compact: isCompact),
+                    ],
+                  );
                 },
-                children: [
-                  _buildHomeTab(context, compact: isCompact),
-                  _buildReaderTab(context, compact: isCompact),
-                  _buildSettingsTab(context, compact: isCompact),
-                ],
-              );
-            },
+              ),
+            ),
           ),
         ),
+      ),
+    );
+  }
+
+  bool _shouldUseRabbitLayout(Size size) {
+    if (size.width <= 0 || size.height <= 0) {
+      return false;
+    }
+
+    final shortestSide = math.min(size.width, size.height);
+    final longestSide = math.max(size.width, size.height);
+    return shortestSide <= 720 && (longestSide / shortestSide) <= 1.18;
+  }
+
+  Widget _buildRabbitBody(BuildContext context, {required bool compact}) {
+    if (_activeTab == _AppTab.settings) {
+      return _buildRabbitBookTab(context);
+    }
+    return _buildRabbitReaderTab(context);
+  }
+
+  Widget _buildRabbitReaderTab(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final showNext = _isAtFragmentEnd;
+
+    return KeyedSubtree(
+      key: const ValueKey('rabbit-reader-tab'),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                _buildRabbitIconButton(
+                  icon: Icons.menu_book_rounded,
+                  onPressed: () => _navigateToTab(_AppTab.settings),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _activeSourceLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -0.4,
+                        ),
+                      ),
+                      Text(
+                        _chapterProgressLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.labelLarge?.copyWith(
+                          color: _muted,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _buildRabbitIconButton(
+                  icon: showNext
+                      ? Icons.skip_next_rounded
+                      : Icons.keyboard_double_arrow_right_rounded,
+                  selected: _isHoldActive || (showNext && _hasNextFragment),
+                  onPressed: showNext
+                      ? (_hasNextFragment ? _goToNextFragment : null)
+                      : _togglePlayback,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) {
+                  final width = context.size?.width ?? 0;
+                  final dx = details.localPosition.dx;
+                  if (width > 0 && dx < width * 0.25) {
+                    _handleRabbitPreviousAction();
+                  } else if (width > 0 && dx > width * 0.75) {
+                    _handleRabbitNextAction();
+                  } else {
+                    _togglePlayback();
+                  }
+                },
+                onLongPressStart: (_) => _handleRabbitSideButtonDown(),
+                onLongPressEnd: (_) => _handleRabbitSideButtonUp(),
+                onLongPressCancel: _handleRabbitSideButtonUp,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: _surfaceWarm,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: _panelBorder),
+                  ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Container(
+                        width: 2,
+                        height: 210,
+                        decoration: BoxDecoration(
+                          color: _accent.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
+                        child: _PivotAlignedWord(
+                          word: _currentWord,
+                          accentColor: _accent,
+                          textColor: _ink,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _RabbitStatPill(
+                    label: 'WPM',
+                    value: '${_wordsPerMinute.round()}',
+                    selected: true,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: _RabbitStatPill(
+                    label: _isHoldModeEnabled ? 'HOLD' : 'AUTO',
+                    value: _isHoldActive
+                        ? 'ON'
+                        : _isPlaying
+                        ? 'PLAY'
+                        : 'READY',
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: _RabbitStatPill(label: 'ETA', value: _etaLabel),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildRabbitIconButton(
+                    icon: Icons.skip_previous_rounded,
+                    large: true,
+                    onPressed: _isAtFragmentStart
+                        ? null
+                        : _jumpToPreviousReadingPoint,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _isHoldModeEnabled
+                      ? _buildHoldAdvanceButton(
+                          context,
+                          enabled:
+                              _hasWords &&
+                              !_isAtFragmentEnd &&
+                              (!_isPlaying || _isHoldActive),
+                        )
+                      : _buildRabbitIconButton(
+                          icon: _isPlaying
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
+                          large: true,
+                          selected: _showReaderPlayTrigger,
+                          onPressed: _hasWords ? _togglePlayback : null,
+                        ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildRabbitIconButton(
+                    icon: showNext
+                        ? Icons.skip_next_rounded
+                        : Icons.menu_book_rounded,
+                    large: true,
+                    selected: showNext && _hasNextFragment,
+                    onPressed: showNext
+                        ? (_hasNextFragment ? _goToNextFragment : null)
+                        : () => _navigateToTab(_AppTab.settings),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRabbitBookTab(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final groups = _buildSectionGroups();
+
+    return KeyedSubtree(
+      key: const ValueKey('rabbit-book-tab'),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                _buildRabbitIconButton(
+                  icon: Icons.arrow_back_rounded,
+                  onPressed: () => _navigateToTab(_AppTab.reader),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Libro',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.6,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${_chapterTexts.length}',
+                  style: textTheme.titleMedium?.copyWith(
+                    color: _accent,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView.builder(
+                itemCount: groups.length,
+                itemBuilder: (context, groupIndex) {
+                  final group = groups[groupIndex];
+                  final isGroupActive = group.entries.any(
+                    (entry) => entry.index == _activeChapterIndex,
+                  );
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: isGroupActive ? _accentSoft : _panel,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: isGroupActive ? _accent : _panelBorder,
+                        ),
+                      ),
+                      child: ExpansionTile(
+                        initiallyExpanded: isGroupActive || groups.length == 1,
+                        shape: const Border(),
+                        collapsedShape: const Border(),
+                        backgroundColor: Colors.transparent,
+                        collapsedBackgroundColor: Colors.transparent,
+                        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                        childrenPadding: const EdgeInsets.fromLTRB(
+                          10,
+                          0,
+                          10,
+                          10,
+                        ),
+                        title: Text(
+                          group.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        subtitle: Text(
+                          '${group.entries.length} ${_sectionPluralLabel.toLowerCase()}',
+                          style: textTheme.labelMedium?.copyWith(
+                            color: _muted,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        children: [
+                          for (final entry in group.entries)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: _QuickActionTile(
+                                icon: entry.index == _activeChapterIndex
+                                    ? Icons.radio_button_checked_rounded
+                                    : Icons.notes_rounded,
+                                title:
+                                    '${entry.index + 1}. ${_compactChapterLabel(entry.title)}',
+                                subtitle: entry.index == _activeChapterIndex
+                                    ? '$_sectionSingularLabel attivo'
+                                    : 'Apri questo $_sectionSingularLower',
+                                selected: entry.index == _activeChapterIndex,
+                                onTap: () {
+                                  _selectChapter(entry.index);
+                                  _navigateToTab(_AppTab.reader);
+                                },
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRabbitIconButton({
+    required IconData icon,
+    required VoidCallback? onPressed,
+    bool selected = false,
+    bool large = false,
+  }) {
+    return SizedBox(
+      height: large ? 54 : 44,
+      width: large ? null : 44,
+      child: FilledButton(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          elevation: 0,
+          backgroundColor: selected
+              ? _accent
+              : Colors.white.withValues(alpha: 0.72),
+          foregroundColor: selected ? Colors.white : _ink,
+          disabledBackgroundColor: Colors.white.withValues(alpha: 0.36),
+          disabledForegroundColor: _muted.withValues(alpha: 0.5),
+          padding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: selected ? _accentDeep : _panelBorder),
+          ),
+        ),
+        child: Icon(icon, size: large ? 28 : 22),
       ),
     );
   }
@@ -2348,6 +2973,60 @@ _GroupedSectionTitle _splitGroupedSectionTitle(String value) {
     groupTitle: groupTitle.isEmpty ? 'Libro' : groupTitle,
     title: title.isEmpty ? normalized : title,
   );
+}
+
+class _RabbitStatPill extends StatelessWidget {
+  const _RabbitStatPill({
+    required this.label,
+    required this.value,
+    this.selected = false,
+  });
+
+  final String label;
+  final String value;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: selected ? _accentSoft : Colors.white.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: selected ? _accent : _panelBorder),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.titleSmall?.copyWith(
+                color: selected ? _accentDeep : _ink,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+            const SizedBox(height: 1),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.labelSmall?.copyWith(
+                color: _muted,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ReaderStatColumn extends StatelessWidget {

@@ -51,6 +51,30 @@ void main() {
     expect(store._session?.sectionPluralLabel, 'Frammenti');
   });
 
+  testWidgets('uses the Rabbit reader layout on a square viewport', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(640, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      SpeedyReaderApp(sessionStore: _MemoryReadingSessionStore()),
+    );
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.byKey(const ValueKey('rabbit-reader-tab')), findsOneWidget);
+    expect(find.byKey(const ValueKey('bottom-nav-idle')), findsNothing);
+    expect(find.text('Alice Nel Paese Delle Meraviglie'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.menu_book_rounded).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const ValueKey('rabbit-book-tab')), findsOneWidget);
+  });
+
   testWidgets('replaces a saved demo session with Alice', (
     WidgetTester tester,
   ) async {
