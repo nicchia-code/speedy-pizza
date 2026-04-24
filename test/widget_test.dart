@@ -8,6 +8,12 @@ import 'package:speedy_pizza/main.dart';
 import 'package:speedy_pizza/src/reading_session_store_base.dart';
 import 'package:speedy_pizza/src/text_source_picker_base.dart';
 
+const _legacyDemoText = '''
+Leggere veloce non vuol dire correre a caso.
+Vuol dire ridurre le pause inutili e lasciare che gli occhi seguano un ritmo chiaro.
+Questa demo mostra una parola alla volta, con la lettera centrale evidenziata, per mantenere il focus.
+''';
+
 void main() {
   testWidgets('home shows the Speedy Pizza shell', (WidgetTester tester) async {
     await tester.pumpWidget(const SpeedyReaderApp());
@@ -45,7 +51,61 @@ void main() {
     expect(store._session?.sectionPluralLabel, 'Frammenti');
   });
 
-  testWidgets('loading a file replaces the demo reader text', (
+  testWidgets('replaces a saved demo session with Alice', (
+    WidgetTester tester,
+  ) async {
+    final store = _MemoryReadingSessionStore()
+      .._session = SavedReadingSession(
+        bookName: null,
+        formatLabel: null,
+        bookText: _legacyDemoText,
+        chapterTexts: const [_legacyDemoText],
+        chapterTitles: const ['Demo'],
+        resumeChapterIndex: 0,
+        resumeWordIndex: 0,
+        totalWords: 39,
+        savedAt: 123,
+      );
+
+    await tester.pumpWidget(SpeedyReaderApp(sessionStore: store));
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.text('Alice Nel Paese Delle Meraviglie'), findsOneWidget);
+    expect(find.text('Leg'), findsNothing);
+    expect(store._session?.bookName, 'Alice nel paese delle meraviglie');
+  });
+
+  testWidgets('the demo action reloads Alice', (WidgetTester tester) async {
+    final store = _MemoryReadingSessionStore()
+      .._session = SavedReadingSession(
+        bookName: 'Libro vecchio',
+        formatLabel: 'TXT',
+        bookText: 'Sandokan corre verso Mompracem.',
+        chapterTexts: const ['Sandokan corre verso Mompracem.'],
+        chapterTitles: const ['Capitolo 1'],
+        resumeChapterIndex: 0,
+        resumeWordIndex: 0,
+        totalWords: 4,
+        savedAt: 123,
+      );
+
+    await tester.pumpWidget(SpeedyReaderApp(sessionStore: store));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Libro Vecchio'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.upload_file_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Usa la demo'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.text('Alice Nel Paese Delle Meraviglie'), findsOneWidget);
+    expect(store._session?.bookName, 'Alice nel paese delle meraviglie');
+  });
+
+  testWidgets('loading a file replaces the default reader text', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(

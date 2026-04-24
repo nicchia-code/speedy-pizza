@@ -28,7 +28,7 @@ const _defaultBookAssetPath =
     'assets/books/alice_nel_paese_delle_meraviglie.pb';
 const _defaultBookFileName = 'Alice_nel_paese_delle_meraviglie.pb';
 
-const _demoText = '''
+const _legacyDemoText = '''
 Leggere veloce non vuol dire correre a caso.
 Vuol dire ridurre le pause inutili e lasciare che gli occhi seguano un ritmo chiaro.
 Questa demo mostra una parola alla volta, con la lettera centrale evidenziata, per mantenere il focus.
@@ -112,9 +112,7 @@ class ReaderPage extends StatefulWidget {
 }
 
 class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
-  final TextEditingController _textController = TextEditingController(
-    text: _demoText,
-  );
+  final TextEditingController _textController = TextEditingController();
   final TextEditingController _draftTextController = TextEditingController();
   late final TextSourcePicker _textSourcePicker;
   late final ReadingSessionStore _sessionStore;
@@ -123,12 +121,12 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   late final AnimationController _readerPlayHintController;
   late final PageController _pageController;
 
-  List<String> _words = _tokenize(_demoText);
-  List<String> _chapterTexts = const [_demoText];
-  List<String> _chapterTitles = const ['Demo'];
+  List<String> _words = const [];
+  List<String> _chapterTexts = const [];
+  List<String> _chapterTitles = const [];
   String _sectionSingularLabel = 'Capitolo';
   String _sectionPluralLabel = 'Capitoli';
-  List<int> _chapterWordCounts = [_tokenize(_demoText).length];
+  List<int> _chapterWordCounts = const [];
   int _activeChapterIndex = 0;
   int _currentWordIndex = 0;
   int _playbackStartIndex = 0;
@@ -143,8 +141,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   List<String> _loadedBookAuthors = const <String>[];
   String? _loadedBookSummary;
   String? _loadedFormatLabel;
-  String _statusMessage =
-      'Demo pronta. Incolla il testo oppure carica un ebook.';
+  String _statusMessage = 'Caricamento di Alice in corso...';
 
   bool get _hasWords => _words.isNotEmpty;
 
@@ -165,7 +162,12 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     return '${(seconds / 60).round()}m';
   }
 
-  String get _activeSourceLabel => _prettifySourceName(_loadedFileName);
+  String get _activeSourceLabel {
+    if (_loadedFileName == null && !_hasWords) {
+      return 'Caricamento libro';
+    }
+    return _prettifySourceName(_loadedFileName);
+  }
 
   String? get _activeAuthorLabel =>
       _loadedBookAuthors.isEmpty ? null : _loadedBookAuthors.join(', ');
@@ -173,10 +175,14 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   String? get _activeBookSummary => _cleanNullableText(_loadedBookSummary);
 
   bool get _showReaderPlayTrigger =>
-      _activeTab == _AppTab.reader && !_isPlaying && !_isAtFragmentEnd;
+      _activeTab == _AppTab.reader &&
+      _hasWords &&
+      !_isPlaying &&
+      !_isAtFragmentEnd;
 
-  String get _chapterProgressLabel =>
-      '${_activeChapterIndex + 1} / ${_chapterTexts.length}';
+  String get _chapterProgressLabel => _chapterTexts.isEmpty
+      ? '0 / 0'
+      : '${_activeChapterIndex + 1} / ${_chapterTexts.length}';
 
   String get _sectionSingularLower => _sectionSingularLabel.toLowerCase();
 
@@ -210,7 +216,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   String _prettifySourceName(String? rawName) {
     if (rawName == null || rawName.trim().isEmpty) {
-      return 'Demo';
+      return 'Testo';
     }
 
     final withoutExtension = rawName.replaceFirst(RegExp(r'\.[^.]+$'), '');
@@ -220,7 +226,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
         .trim();
 
     if (normalized.isEmpty) {
-      return 'Demo';
+      return 'Testo';
     }
 
     return normalized
@@ -320,6 +326,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
 
     final chapterTexts = _coerceChapterTexts(session.chapterTexts);
+    if (_isLegacyDemoSession(session, chapterTexts)) {
+      _log('restoreSession: legacy demo session ignored');
+      await _sessionStore.saveSession(null);
+      await _loadDefaultBook();
+      return;
+    }
+
     final sectionSingularLabel = _coerceSectionLabel(
       session.sectionSingularLabel,
       'Capitolo',
@@ -384,6 +397,26 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       initialIndex: restoredIndex,
       keepChapterContext: true,
     );
+  }
+
+  bool _isLegacyDemoSession(
+    SavedReadingSession session,
+    List<String> chapterTexts,
+  ) {
+    final normalizedDemo = _normalizeText(_legacyDemoText);
+    final hasDemoText =
+        chapterTexts.length == 1 && chapterTexts.first == normalizedDemo;
+    if (!hasDemoText) {
+      return false;
+    }
+
+    final bookName = _cleanNullableText(session.bookName);
+    final formatLabel = _cleanNullableText(session.formatLabel);
+    final hasDemoTitle =
+        session.chapterTitles.length == 1 &&
+        session.chapterTitles.first.trim().toLowerCase() == 'demo';
+
+    return bookName == null && formatLabel == null && hasDemoTitle;
   }
 
   Future<void> _loadDefaultBook() async {
@@ -625,24 +658,20 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
   }
 
-  void _loadDemoText() {
+  Future<void> _loadDemoText() async {
     _contentLoadGeneration += 1;
-    _textController.text = _demoText;
-    _draftTextController.clear();
-    _chapterTexts = const [_demoText];
-    _chapterTitles = const ['Demo'];
-    _sectionSingularLabel = 'Capitolo';
-    _sectionPluralLabel = 'Capitoli';
-    _chapterWordCounts = [_tokenize(_demoText).length];
-    _activeChapterIndex = 0;
-    _loadedFileName = null;
-    _loadedBookAuthors = const <String>[];
-    _loadedBookSummary = null;
-    _loadedFormatLabel = null;
-    _prepareText(
-      message: 'Demo ricaricata. La lettera centrale resta ancorata al centro.',
-      keepChapterContext: true,
-    );
+    if (_ticker.isActive) {
+      _ticker.stop();
+    }
+    setState(() {
+      _isPlaying = false;
+      _isHoldActive = false;
+      _statusMessage = 'Caricamento di Alice in corso...';
+    });
+    await _loadDefaultBook();
+    if (!mounted) {
+      return;
+    }
     _setActiveTab(_AppTab.reader, animate: false);
   }
 
@@ -1111,7 +1140,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 8),
               Text(
-                'Importa un ebook, incolla un estratto oppure apri la demo. Da qui in poi il reader resta la vista principale.',
+                'Importa un ebook, incolla un estratto oppure riparti da Alice. Da qui in poi il reader resta la vista principale.',
                 style: textTheme.bodyLarge?.copyWith(
                   color: _muted,
                   height: 1.45,
@@ -1141,7 +1170,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
               _QuickActionTile(
                 icon: Icons.auto_stories_rounded,
                 title: 'Usa la demo',
-                subtitle: 'Riparti subito con il testo di esempio',
+                subtitle: 'Riparti da Alice nel paese delle meraviglie',
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   _loadDemoText();
