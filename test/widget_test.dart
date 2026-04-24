@@ -33,6 +33,18 @@ void main() {
     expect(find.text('Carica ebook'), findsOneWidget);
   });
 
+  testWidgets('loads Alice as the default book', (WidgetTester tester) async {
+    final store = _MemoryReadingSessionStore();
+
+    await tester.pumpWidget(SpeedyReaderApp(sessionStore: store));
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.text('Alice Nel Paese Delle Meraviglie'), findsOneWidget);
+    expect(find.textContaining('Lewis Carroll'), findsOneWidget);
+    expect(store._session?.sectionSingularLabel, 'Frammento');
+    expect(store._session?.sectionPluralLabel, 'Frammenti');
+  });
+
   testWidgets('loading a file replaces the demo reader text', (
     WidgetTester tester,
   ) async {

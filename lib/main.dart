@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import 'src/book_importer.dart';
 import 'src/reading_session_store.dart';
@@ -23,6 +24,9 @@ const _brandInk = Color(0xFF57524E);
 const _brandInkSoft = Color(0xFF6E6863);
 const _surfaceWarm = Color(0xFFF7EFE8);
 const _holdLookbackWords = 100;
+const _defaultBookAssetPath =
+    'assets/books/alice_nel_paese_delle_meraviglie.pb';
+const _defaultBookFileName = 'Alice_nel_paese_delle_meraviglie.pb';
 
 const _demoText = '''
 Leggere veloce non vuol dire correre a caso.
@@ -133,6 +137,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   bool _isHoldModeEnabled = true;
   bool _isHoldActive = false;
   int? _holdPointer;
+  int _contentLoadGeneration = 0;
   _AppTab _activeTab = _AppTab.home;
   String? _loadedFileName;
   List<String> _loadedBookAuthors = const <String>[];
@@ -305,8 +310,12 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   Future<void> _restoreSession() async {
     _log('restoreSession: load start');
     final session = await _sessionStore.loadSession();
-    if (!mounted || session == null) {
+    if (!mounted) {
+      return;
+    }
+    if (session == null) {
       _log('restoreSession: nothing to restore');
+      await _loadDefaultBook();
       return;
     }
 
@@ -331,6 +340,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
     if (chapterTexts.isEmpty) {
       _log('restoreSession: no chapter texts in storage');
+      await _loadDefaultBook();
       return;
     }
 
@@ -344,6 +354,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     final words = _tokenize(chapterTexts[chapterIndex]);
     if (words.isEmpty) {
       _log('restoreSession: saved text has no words');
+      await _loadDefaultBook();
       return;
     }
 
@@ -373,6 +384,35 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       initialIndex: restoredIndex,
       keepChapterContext: true,
     );
+  }
+
+  Future<void> _loadDefaultBook() async {
+    final generation = _contentLoadGeneration;
+    _log('loadDefaultBook: asset=$_defaultBookAssetPath');
+    try {
+      final data = await rootBundle.load(_defaultBookAssetPath);
+      if (!mounted || generation != _contentLoadGeneration) {
+        return;
+      }
+      final importedBook = await importBook(
+        PickedSourceFile(
+          name: _defaultBookFileName,
+          bytes: data.buffer.asUint8List(
+            data.offsetInBytes,
+            data.lengthInBytes,
+          ),
+        ),
+      );
+      if (!mounted || generation != _contentLoadGeneration) {
+        return;
+      }
+      _loadBookChapters(
+        importedBook,
+        message: 'Alice pronta come libro di default.',
+      );
+    } catch (error) {
+      _log('loadDefaultBook: failed with $error');
+    }
   }
 
   int _clampChapterIndex(int index, int length) {
@@ -515,6 +555,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
         }
         return;
       }
+      _contentLoadGeneration += 1;
       _log(
         'pickTextFile: picked ${pickedFile.name} '
         '(${pickedFile.bytes.length} bytes)',
@@ -585,6 +626,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   }
 
   void _loadDemoText() {
+    _contentLoadGeneration += 1;
     _textController.text = _demoText;
     _draftTextController.clear();
     _chapterTexts = const [_demoText];
@@ -673,6 +715,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   }
 
   void _loadDraftText() {
+    _contentLoadGeneration += 1;
     final normalized = _normalizeText(_draftTextController.text);
     if (normalized.isEmpty) {
       setState(() {

@@ -21,3 +21,4 @@ flutter:
   uses-material-design: true
   assets:
     - web/pizzalogo.png
+    - assets/books/alice_nel_paese_delle_meraviglie.pb
