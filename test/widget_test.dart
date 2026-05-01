@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:speedy_pizza/main.dart';
@@ -51,10 +52,10 @@ void main() {
     expect(store._session?.sectionPluralLabel, 'Frammenti');
   });
 
-  testWidgets('uses the Rabbit reader layout on a square viewport', (
+  testWidgets('uses the Rabbit reader-only layout on the R1 viewport', (
     WidgetTester tester,
   ) async {
-    tester.view.physicalSize = const Size(640, 640);
+    tester.view.physicalSize = const Size(480, 640);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -66,13 +67,44 @@ void main() {
 
     expect(find.byKey(const ValueKey('rabbit-reader-tab')), findsOneWidget);
     expect(find.byKey(const ValueKey('bottom-nav-idle')), findsNothing);
-    expect(find.text('Alice Nel Paese Delle Meraviglie'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rabbit-book-tab')), findsNothing);
+    expect(find.text('Alice Nel Paese Delle Meraviglie'), findsNothing);
+    expect(find.byIcon(Icons.menu_book_rounded), findsNothing);
+    expect(find.text('WPM'), findsNothing);
+    expect(find.text('ETA'), findsNothing);
 
-    await tester.tap(find.byIcon(Icons.menu_book_rounded).first);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
     await tester.pump();
+
+    expect(find.text('340'), findsOneWidget);
+    expect(find.text('WPM'), findsOneWidget);
+  });
+
+  testWidgets('double clicking the Rabbit side button opens the reader menu', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(480, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      SpeedyReaderApp(sessionStore: _MemoryReadingSessionStore()),
+    );
+    await tester.pump(const Duration(milliseconds: 700));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.space);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.space);
+    await tester.pump(const Duration(milliseconds: 90));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.space);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.space);
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.byKey(const ValueKey('rabbit-book-tab')), findsOneWidget);
+    expect(find.text('Menu'), findsOneWidget);
+    expect(find.text('Carica libro'), findsOneWidget);
+    expect(find.text('Aggiungi contenuto'), findsNothing);
   });
 
   testWidgets('replaces a saved demo session with Alice', (

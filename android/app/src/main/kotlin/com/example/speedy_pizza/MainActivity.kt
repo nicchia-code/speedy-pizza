@@ -48,6 +48,9 @@ class MainActivity : FlutterActivity() {
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_SCROLL) {
+            val axisScrollTotal = axisTotal(event, MotionEvent.AXIS_SCROLL)
+            val axisVScrollTotal = axisTotal(event, MotionEvent.AXIS_VSCROLL)
+            val axisHScrollTotal = axisTotal(event, MotionEvent.AXIS_HSCROLL)
             sendRabbitInput(
                 mapOf(
                     "type" to "motion",
@@ -57,11 +60,24 @@ class MainActivity : FlutterActivity() {
                     "axisScroll" to event.getAxisValue(MotionEvent.AXIS_SCROLL),
                     "axisVScroll" to event.getAxisValue(MotionEvent.AXIS_VSCROLL),
                     "axisHScroll" to event.getAxisValue(MotionEvent.AXIS_HSCROLL),
+                    "axisScrollTotal" to axisScrollTotal,
+                    "axisVScrollTotal" to axisVScrollTotal,
+                    "axisHScrollTotal" to axisHScrollTotal,
+                    "historySize" to event.historySize,
                     "eventTime" to event.eventTime,
                 )
             )
         }
         return super.dispatchGenericMotionEvent(event)
+    }
+
+    private fun axisTotal(event: MotionEvent, axis: Int): Float {
+        var total = 0f
+        for (index in 0 until event.historySize) {
+            total += event.getHistoricalAxisValue(axis, index)
+        }
+        total += event.getAxisValue(axis)
+        return total
     }
 
     private fun sendRabbitInput(event: Map<String, Any?>) {

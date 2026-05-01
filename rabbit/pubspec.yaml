@@ -1,0 +1,24 @@
+name: cinder_reading
+description: "Cinder Reading per Rabbit R1."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  archive: ^4.0.7
+  file_picker: ^11.0.2
+  flutter:
+    sdk: flutter
+  xml: ^6.6.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/brand/cinder_icon.png
+    - assets/books/alice_nel_paese_delle_meraviglie.pb

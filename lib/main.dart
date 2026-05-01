@@ -26,10 +26,20 @@ const _brandInk = Color(0xFF57524E);
 const _brandInkSoft = Color(0xFF6E6863);
 const _surfaceWarm = Color(0xFFF7EFE8);
 const _holdLookbackWords = 100;
+const _holdReleaseReturnWords = 20;
+const _rabbitWheelBaseStepWpm = 40.0;
+const _rabbitWheelMaxStepWpm = 180.0;
+const _rabbitWheelIdleResetMs = 650;
+const _rabbitWheelMomentumDecayMs = 550;
+const _rabbitWheelKeyStepWpm = 20.0;
+const _rabbitWheelKeyDebounceMs = 45;
+const _rabbitSideHoldDelay = Duration(milliseconds: 180);
+const _rabbitSideDoubleClickWindow = Duration(milliseconds: 320);
 const _defaultBookAssetPath =
     'assets/books/alice_nel_paese_delle_meraviglie.pb';
 const _defaultBookFileName = 'Alice_nel_paese_delle_meraviglie.pb';
 const _rabbitInputEventChannel = EventChannel('speedy_pizza/rabbit_input');
+const _rabbitReaderOnlyMode = true;
 const _rabbitSideButtonKeyCodes = <int>{
   27, // KEYCODE_CAMERA
   62, // KEYCODE_SPACE, useful for local/dev keyboards.
@@ -47,6 +57,18 @@ const _rabbitPlayPauseKeyCodes = <int>{
 };
 const _rabbitNextKeyCodes = <int>{87}; // KEYCODE_MEDIA_NEXT
 const _rabbitPreviousKeyCodes = <int>{88}; // KEYCODE_MEDIA_PREVIOUS
+const _rabbitWheelIncreaseKeyCodes = <int>{
+  19, // KEYCODE_DPAD_UP
+  22, // KEYCODE_DPAD_RIGHT
+  24, // KEYCODE_VOLUME_UP
+  92, // KEYCODE_PAGE_UP
+};
+const _rabbitWheelDecreaseKeyCodes = <int>{
+  20, // KEYCODE_DPAD_DOWN
+  21, // KEYCODE_DPAD_LEFT
+  25, // KEYCODE_VOLUME_DOWN
+  93, // KEYCODE_PAGE_DOWN
+};
 
 const _legacyDemoText = '''
 Leggere veloce non vuol dire correre a caso.
@@ -161,7 +183,17 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   int? _holdPointer;
   int _contentLoadGeneration = 0;
   bool _isRabbitLayoutActive = false;
+  bool _isRabbitSystemUiHidden = false;
   bool _isRabbitSideButtonDown = false;
+  bool _showRabbitSpeedOverlay = false;
+  int? _lastRabbitWheelEventTimeMs;
+  int? _lastRabbitWheelKeyCode;
+  int? _lastRabbitWheelKeyEventTimeMs;
+  double? _lastRabbitWheelDirection;
+  double _rabbitWheelMomentum = 0;
+  Timer? _rabbitSpeedOverlayTimer;
+  Timer? _rabbitSideHoldTimer;
+  Timer? _rabbitSideSingleClickTimer;
   _AppTab _activeTab = _AppTab.home;
   String? _loadedFileName;
   List<String> _loadedBookAuthors = const <String>[];
@@ -379,6 +411,21 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       'scan=${_eventInt(event, 'scanCode')} source=${_eventInt(event, 'source')}',
     );
 
+    if (_rabbitWheelIncreaseKeyCodes.contains(keyCode) ||
+        _rabbitWheelDecreaseKeyCodes.contains(keyCode)) {
+      if (action == 0 && repeatCount == 0) {
+        final direction = _rabbitWheelIncreaseKeyCodes.contains(keyCode)
+            ? 1.0
+            : -1.0;
+        _handleRabbitWheelKey(
+          keyCode: keyCode,
+          direction: direction,
+          eventTimeMillis: _eventInt(event, 'eventTime'),
+        );
+      }
+      return;
+    }
+
     if (_rabbitSideButtonKeyCodes.contains(keyCode)) {
       if (action == 0 && repeatCount == 0) {
         _handleRabbitSideButtonDown();
@@ -405,27 +452,62 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
   }
 
+  void _handleRabbitWheelKey({
+    required int keyCode,
+    required double direction,
+    int? eventTimeMillis,
+  }) {
+    final now = eventTimeMillis ?? DateTime.now().millisecondsSinceEpoch;
+    final lastTime = _lastRabbitWheelKeyEventTimeMs;
+    final isDuplicate =
+        _lastRabbitWheelKeyCode == keyCode &&
+        lastTime != null &&
+        now - lastTime >= 0 &&
+        now - lastTime < _rabbitWheelKeyDebounceMs;
+
+    _lastRabbitWheelKeyCode = keyCode;
+    _lastRabbitWheelKeyEventTimeMs = now;
+
+    if (isDuplicate) {
+      return;
+    }
+
+    _handleRabbitWheelFixedStep(direction);
+  }
+
   void _handleRabbitMotionInput(Map<dynamic, dynamic> event) {
-    final scroll =
-        _eventDouble(event, 'axisScroll') ??
-        _eventDouble(event, 'axisVScroll') ??
-        _eventDouble(event, 'axisHScroll') ??
-        0;
-    if (scroll.abs() < 0.01) {
+    final scroll = _eventScrollDelta(event);
+    if (scroll == null) {
       return;
     }
 
     _log(
-      'rabbitInput:wheel delta=$scroll source=${_eventInt(event, 'source')}',
+      'rabbitInput:wheel delta=$scroll history=${_eventInt(event, 'historySize')} '
+      'source=${_eventInt(event, 'source')}',
     );
-    _handleRabbitWheel(scroll);
+    _handleRabbitWheel(scroll, eventTimeMillis: _eventInt(event, 'eventTime'));
+  }
+
+  double? _eventScrollDelta(Map<dynamic, dynamic> event) {
+    const axisKeys = [
+      'axisScrollTotal',
+      'axisVScrollTotal',
+      'axisHScrollTotal',
+      'axisScroll',
+      'axisVScroll',
+      'axisHScroll',
+    ];
+
+    for (final key in axisKeys) {
+      final value = _eventDouble(event, key);
+      if (value != null && value.abs() >= 0.01) {
+        return value;
+      }
+    }
+    return null;
   }
 
   void _handleRabbitKeyboardEvent(KeyEvent event) {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return;
-    }
-
     final isPress = event is KeyDownEvent && event is! KeyRepeatEvent;
     final isRelease = event is KeyUpEvent;
     final isRepeatedPress = event is KeyRepeatEvent;
@@ -445,9 +527,9 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
 
     if (key == LogicalKeyboardKey.arrowUp) {
-      _handleRabbitWheel(1);
+      _handleRabbitWheelFixedStep(1);
     } else if (key == LogicalKeyboardKey.arrowDown) {
-      _handleRabbitWheel(-1);
+      _handleRabbitWheelFixedStep(-1);
     } else if (key == LogicalKeyboardKey.arrowLeft) {
       _handleRabbitPreviousAction();
     } else if (key == LogicalKeyboardKey.arrowRight) {
@@ -465,7 +547,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     if (event.scrollDelta.dy == 0) {
       return;
     }
-    _handleRabbitWheel(event.scrollDelta.dy < 0 ? 1 : -1);
+    final scrollUnits = (event.scrollDelta.dy.abs() / 60)
+        .clamp(1.0, 3.0)
+        .toDouble();
+    _handleRabbitWheel(event.scrollDelta.dy < 0 ? scrollUnits : -scrollUnits);
   }
 
   void _handleRabbitSideButtonDown() {
@@ -473,19 +558,22 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       return;
     }
     _isRabbitSideButtonDown = true;
+    _rabbitSideHoldTimer?.cancel();
 
-    if (_activeTab == _AppTab.settings) {
-      _navigateToTab(_AppTab.reader);
+    if (_activeTab != _AppTab.reader ||
+        _isAtFragmentEnd ||
+        !_isHoldModeEnabled) {
       return;
     }
 
-    if (_isAtFragmentEnd) {
-      return;
-    }
-
-    if (_isHoldModeEnabled) {
+    _rabbitSideHoldTimer = Timer(_rabbitSideHoldDelay, () {
+      if (!mounted ||
+          !_isRabbitSideButtonDown ||
+          _activeTab != _AppTab.reader) {
+        return;
+      }
       _startHoldAdvance();
-    }
+    });
   }
 
   void _handleRabbitSideButtonUp() {
@@ -493,14 +581,42 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       return;
     }
     _isRabbitSideButtonDown = false;
-
-    if (_isAtFragmentEnd) {
-      _handleRabbitNextAction();
-      return;
-    }
+    _rabbitSideHoldTimer?.cancel();
+    _rabbitSideHoldTimer = null;
 
     if (_isHoldActive) {
       _finishHoldAdvance();
+      return;
+    }
+
+    _handleRabbitSideButtonClick();
+  }
+
+  void _handleRabbitSideButtonClick() {
+    if (_rabbitSideSingleClickTimer?.isActive ?? false) {
+      _rabbitSideSingleClickTimer?.cancel();
+      _rabbitSideSingleClickTimer = null;
+      _openRabbitMenu();
+      return;
+    }
+
+    _rabbitSideSingleClickTimer = Timer(_rabbitSideDoubleClickWindow, () {
+      _rabbitSideSingleClickTimer = null;
+      if (!mounted) {
+        return;
+      }
+      _performRabbitSideSingleClick();
+    });
+  }
+
+  void _performRabbitSideSingleClick() {
+    if (_activeTab == _AppTab.settings) {
+      _navigateToTab(_AppTab.reader);
+      return;
+    }
+
+    if (_isAtFragmentEnd) {
+      _handleRabbitNextAction();
       return;
     }
 
@@ -509,11 +625,88 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
     }
   }
 
-  void _handleRabbitWheel(double delta) {
-    if (_activeTab != _AppTab.reader) {
+  void _handleRabbitWheelFixedStep(double direction) {
+    if (_activeTab != _AppTab.reader || direction == 0) {
       return;
     }
-    _adjustSpeedBy(delta > 0 ? 20 : -20);
+    _log(
+      'rabbitInput:wheel fixedStep=${_rabbitWheelKeyStepWpm.round()} '
+      'direction=${direction.sign.toInt()}',
+    );
+    _adjustSpeedBy(direction.sign * _rabbitWheelKeyStepWpm);
+    _showRabbitSpeedHud();
+  }
+
+  void _handleRabbitWheel(double delta, {int? eventTimeMillis}) {
+    if (_activeTab != _AppTab.reader || delta == 0) {
+      return;
+    }
+    final step = _rabbitWheelStepFor(delta, eventTimeMillis);
+    _log(
+      'rabbitInput:wheel step=${step.round()} direction=${delta.sign.toInt()} '
+      'momentum=${_rabbitWheelMomentum.toStringAsFixed(2)}',
+    );
+    _adjustSpeedBy(delta.sign * step);
+    _showRabbitSpeedHud();
+  }
+
+  double _rabbitWheelStepFor(double delta, int? eventTimeMillis) {
+    final direction = delta.sign;
+    final magnitude = delta.abs().clamp(1.0, 4.0).toDouble();
+    final now = eventTimeMillis ?? DateTime.now().millisecondsSinceEpoch;
+    final last = _lastRabbitWheelEventTimeMs;
+    _lastRabbitWheelEventTimeMs = now;
+
+    final intervalMs = last == null ? null : math.max(0, now - last);
+    if (_lastRabbitWheelDirection != direction ||
+        intervalMs == null ||
+        intervalMs > _rabbitWheelIdleResetMs) {
+      _rabbitWheelMomentum = 0;
+    } else {
+      _rabbitWheelMomentum = math.max(
+        0,
+        _rabbitWheelMomentum - (intervalMs / _rabbitWheelMomentumDecayMs),
+      );
+    }
+    _lastRabbitWheelDirection = direction;
+    _rabbitWheelMomentum = (_rabbitWheelMomentum + magnitude)
+        .clamp(1.0, 8.0)
+        .toDouble();
+
+    var cadenceBonus = 0.0;
+    if (last != null) {
+      if (intervalMs == null || intervalMs <= 80) {
+        cadenceBonus = 2.0;
+      } else if (intervalMs <= 160) {
+        cadenceBonus = 1.2;
+      } else if (intervalMs <= 280) {
+        cadenceBonus = 0.6;
+      }
+    }
+
+    final momentumBonus = (_rabbitWheelMomentum - 1) * 0.35;
+    final step = (_rabbitWheelBaseStepWpm * (1 + momentumBonus + cadenceBonus))
+        .clamp(_rabbitWheelBaseStepWpm, _rabbitWheelMaxStepWpm)
+        .toDouble();
+    return (step / 10).round() * 10.0;
+  }
+
+  void _showRabbitSpeedHud() {
+    _rabbitSpeedOverlayTimer?.cancel();
+    if (!_showRabbitSpeedOverlay) {
+      setState(() {
+        _showRabbitSpeedOverlay = true;
+      });
+    }
+
+    _rabbitSpeedOverlayTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _showRabbitSpeedOverlay = false;
+      });
+    });
   }
 
   void _handleRabbitPreviousAction() {
@@ -525,6 +718,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   void _handleRabbitNextAction() {
     if (_isAtFragmentEnd && _hasNextFragment) {
       _goToNextFragment();
+      return;
+    }
+
+    if (_isRabbitLayoutActive && _rabbitReaderOnlyMode) {
       return;
     }
 
@@ -557,7 +754,13 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    if (_isRabbitSystemUiHidden) {
+      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    }
     _saveCurrentSession();
+    _rabbitSpeedOverlayTimer?.cancel();
+    _rabbitSideHoldTimer?.cancel();
+    _rabbitSideSingleClickTimer?.cancel();
     _rabbitInputSubscription?.cancel();
     _rabbitInputFocusNode.dispose();
     _ticker.dispose();
@@ -1350,8 +1553,10 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       _ticker.stop();
     }
 
-    final returnIndex = _resolveHoldReturnIndex(_words, _currentWordIndex);
-    final foundFullStop = _wordHasFullStop(_words[returnIndex]);
+    final returnIndex = _resolveHoldReleaseReturnIndex(
+      _words,
+      _currentWordIndex,
+    );
 
     setState(() {
       _currentWordIndex = returnIndex;
@@ -1360,9 +1565,7 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       if (disableHoldMode) {
         _isHoldModeEnabled = false;
       }
-      _statusMessage = foundFullStop
-          ? 'HOLD: ritorno all\'ultimo punto fermo.'
-          : 'HOLD: ritorno di 100 parole.';
+      _statusMessage = 'HOLD: ritorno di 20 parole.';
     });
 
     _saveCurrentSession();
@@ -1374,6 +1577,104 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
       return;
     }
     _navigateToTab(_AppTab.reader);
+  }
+
+  Future<void> _openRabbitMenu() async {
+    if (_ticker.isActive) {
+      _ticker.stop();
+      setState(() {
+        _isPlaying = false;
+        _isHoldActive = false;
+      });
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.28),
+      builder: (dialogContext) {
+        final textTheme = Theme.of(dialogContext).textTheme;
+
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              child: Material(
+                color: Colors.transparent,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: _panel,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: _panelBorder),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x26000000),
+                        blurRadius: 26,
+                        offset: Offset(0, 16),
+                      ),
+                    ],
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(6, 4, 6, 12),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: _accentSoft,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.menu_book_rounded,
+                                  color: _accent,
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Menu',
+                                style: textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.4,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        _QuickActionTile(
+                          icon: Icons.upload_file_rounded,
+                          title: 'Carica libro',
+                          subtitle: 'EPUB, FB2, TXT, MD, HTML, PB',
+                          onTap: () {
+                            Navigator.of(dialogContext).pop();
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                unawaited(_pickTextFile());
+                              }
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (mounted) {
+      _rabbitInputFocusNode.requestFocus();
+    }
   }
 
   Future<void> _openAddContentSheet() async {
@@ -1538,6 +1839,8 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final useRabbitLayout = _shouldUseRabbitLayout(MediaQuery.sizeOf(context));
     _isRabbitLayoutActive = useRabbitLayout;
+    _syncRabbitReaderOnlyMode(useRabbitLayout);
+    _syncRabbitSystemUi(useRabbitLayout);
 
     return KeyboardListener(
       focusNode: _rabbitInputFocusNode,
@@ -1600,14 +1903,105 @@ class _ReaderPageState extends State<ReaderPage> with TickerProviderStateMixin {
 
     final shortestSide = math.min(size.width, size.height);
     final longestSide = math.max(size.width, size.height);
-    return shortestSide <= 720 && (longestSide / shortestSide) <= 1.18;
+    final aspectRatio = longestSide / shortestSide;
+    final squareViewport = shortestSide <= 720 && aspectRatio <= 1.18;
+    final rabbitPortraitViewport =
+        shortestSide <= 520 && longestSide <= 720 && aspectRatio <= 1.45;
+    return squareViewport || rabbitPortraitViewport;
+  }
+
+  void _syncRabbitReaderOnlyMode(bool useRabbitLayout) {
+    if (!useRabbitLayout ||
+        !_rabbitReaderOnlyMode ||
+        _activeTab == _AppTab.reader) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isRabbitLayoutActive || _activeTab == _AppTab.reader) {
+        return;
+      }
+      _setActiveTab(_AppTab.reader, animate: false);
+    });
+  }
+
+  void _syncRabbitSystemUi(bool useRabbitLayout) {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    final shouldHide = useRabbitLayout && _rabbitReaderOnlyMode;
+    if (_isRabbitSystemUiHidden == shouldHide) {
+      return;
+    }
+
+    _isRabbitSystemUiHidden = shouldHide;
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(
+        shouldHide ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+      ),
+    );
   }
 
   Widget _buildRabbitBody(BuildContext context, {required bool compact}) {
+    if (_rabbitReaderOnlyMode) {
+      return _buildRabbitReaderOnlyTab(context);
+    }
+
     if (_activeTab == _AppTab.settings) {
       return _buildRabbitBookTab(context);
     }
     return _buildRabbitReaderTab(context);
+  }
+
+  Widget _buildRabbitReaderOnlyTab(BuildContext context) {
+    return KeyedSubtree(
+      key: const ValueKey('rabbit-reader-tab'),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapUp: (details) {
+          final width = context.size?.width ?? 0;
+          final dx = details.localPosition.dx;
+          if (width > 0 && dx < width * 0.25) {
+            _handleRabbitPreviousAction();
+          } else if (width > 0 && dx > width * 0.75) {
+            _handleRabbitNextAction();
+          } else {
+            _togglePlayback();
+          }
+        },
+        onLongPressStart: (_) => _handleRabbitSideButtonDown(),
+        onLongPressEnd: (_) => _handleRabbitSideButtonUp(),
+        onLongPressCancel: _handleRabbitSideButtonUp,
+        child: SizedBox.expand(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: _PivotAlignedWord(
+                  word: _currentWord,
+                  accentColor: _accent,
+                  textColor: _ink,
+                  profile: _WordDisplayProfile.rabbitReader,
+                ),
+              ),
+              Positioned(
+                left: 44,
+                right: 44,
+                bottom: 38,
+                child: IgnorePointer(
+                  child: _RabbitSpeedOverlay(
+                    visible: _showRabbitSpeedOverlay,
+                    wordsPerMinute: _wordsPerMinute,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildRabbitReaderTab(BuildContext context) {
@@ -3227,16 +3621,137 @@ class _HomeSummaryText extends StatelessWidget {
   }
 }
 
+class _RabbitSpeedOverlay extends StatelessWidget {
+  const _RabbitSpeedOverlay({
+    required this.visible,
+    required this.wordsPerMinute,
+  });
+
+  final bool visible;
+  final double wordsPerMinute;
+
+  @override
+  Widget build(BuildContext context) {
+    final normalized = ((wordsPerMinute - 120) / (900 - 120)).clamp(0.0, 1.0);
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 180),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        final offset = Tween<Offset>(
+          begin: const Offset(0, 0.18),
+          end: Offset.zero,
+        ).animate(animation);
+        return FadeTransition(
+          opacity: animation,
+          child: SlideTransition(position: offset, child: child),
+        );
+      },
+      child: visible
+          ? DecoratedBox(
+              key: const ValueKey('rabbit-speed-overlay-visible'),
+              decoration: BoxDecoration(
+                color: _ink.withValues(alpha: 0.88),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x33000000),
+                    blurRadius: 18,
+                    offset: Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          wordsPerMinute.round().toString(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 32,
+                            height: 0.95,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            'WPM',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.72),
+                              fontSize: 12,
+                              height: 1,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        const Icon(
+                          Icons.speed_rounded,
+                          size: 24,
+                          color: _accentSoft,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 11),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final fillWidth = constraints.maxWidth * normalized;
+
+                        return Stack(
+                          children: [
+                            Container(
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.22),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 120),
+                              curve: Curves.easeOutCubic,
+                              width: fillWidth,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: _accent,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : const SizedBox.shrink(key: ValueKey('rabbit-speed-overlay-hidden')),
+    );
+  }
+}
+
+enum _WordDisplayProfile { standard, rabbitReader }
+
 class _PivotAlignedWord extends StatelessWidget {
   const _PivotAlignedWord({
     required this.word,
     required this.accentColor,
     required this.textColor,
+    this.profile = _WordDisplayProfile.standard,
   });
 
   final String word;
   final Color accentColor;
   final Color textColor;
+  final _WordDisplayProfile profile;
 
   @override
   Widget build(BuildContext context) {
@@ -3290,10 +3805,13 @@ class _PivotAlignedWord extends StatelessWidget {
     double availableWidth,
     double availableHeight,
   ) {
-    final baseSize =
-        _baseFontSizeFor(availableWidth, availableHeight) *
-        _fontScaleForWordLength(word.length);
-    final baseSpacing = baseSize >= 90
+    final baseSize = profile == _WordDisplayProfile.rabbitReader
+        ? _rabbitFontSizeFor(parts, availableWidth, availableHeight)
+        : _baseFontSizeFor(availableWidth, availableHeight) *
+              _fontScaleForWordLength(word.length);
+    final baseSpacing = profile == _WordDisplayProfile.rabbitReader
+        ? 0.0
+        : baseSize >= 90
         ? -2.6
         : baseSize >= 68
         ? -2.0
@@ -3313,6 +3831,53 @@ class _PivotAlignedWord extends StatelessWidget {
       pivotStyle: pivotStyle,
       pivotWidth: pivotSize.width,
     );
+  }
+
+  double _rabbitFontSizeFor(
+    _PivotParts parts,
+    double availableWidth,
+    double availableHeight,
+  ) {
+    const minSize = 42.0;
+    const maxSize = 226.0;
+    final horizontalRoom = (availableWidth / 2) - 18;
+    final verticalRoom = availableHeight * 0.38;
+    final upperBound = math.min(maxSize, math.max(minSize, verticalRoom));
+
+    var low = minSize;
+    var high = upperBound;
+    for (var index = 0; index < 18; index += 1) {
+      final candidate = (low + high) / 2;
+      if (_rabbitFontFits(parts, candidate, horizontalRoom, verticalRoom)) {
+        low = candidate;
+      } else {
+        high = candidate;
+      }
+    }
+
+    return low;
+  }
+
+  bool _rabbitFontFits(
+    _PivotParts parts,
+    double fontSize,
+    double horizontalRoom,
+    double verticalRoom,
+  ) {
+    final style = TextStyle(
+      fontSize: fontSize,
+      height: 1,
+      fontWeight: FontWeight.w900,
+      letterSpacing: 0,
+    );
+    final pivotSize = _measureText(parts.pivot, style);
+    final leftSize = _measureText(parts.left, style);
+    final rightSize = _measureText(parts.right, style);
+    final halfPivot = pivotSize.width / 2;
+
+    return leftSize.width + halfPivot <= horizontalRoom &&
+        rightSize.width + halfPivot <= horizontalRoom &&
+        pivotSize.height <= verticalRoom;
   }
 
   double _baseFontSizeFor(double availableWidth, double availableHeight) {
@@ -3432,6 +3997,15 @@ int _resolveHoldReturnIndex(List<String> words, int currentIndex) {
     }
   }
   return lowerBound;
+}
+
+int _resolveHoldReleaseReturnIndex(List<String> words, int currentIndex) {
+  if (words.isEmpty) {
+    return 0;
+  }
+
+  final safeIndex = currentIndex.clamp(0, words.length - 1).toInt();
+  return math.max(0, safeIndex - _holdReleaseReturnWords);
 }
 
 int _resolvePreviousReturnIndex(List<String> words, int currentIndex) {
